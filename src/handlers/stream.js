@@ -209,7 +209,7 @@ async function handleStreamRequest(args) {
   const { sortedResults, groupInfo } = sortStreams(filteredResults, sortMethod, preferredLanguage);
   console.log(`[SORT] Applied sorting method: ${sortMethod}`);
   if (groupInfo) {
-    console.log(`[SORT] Language grouping: ${groupInfo.preferredCount} ${groupInfo.preferredLanguage}, ${groupInfo.otherCount} others`);
+    console.log(`[SORT] Language grouping: ${groupInfo.preferredCount} ${groupInfo.preferredLanguage}/MULTi, ${groupInfo.completeBlurayCount} Complete Bluray, ${groupInfo.otherCount} others`);
   }
 
   // Limit results if maxResults is set
@@ -229,8 +229,8 @@ async function handleStreamRequest(args) {
       const quality = extractQuality(result.title) || '';
       const detectedLanguage = detectLanguage(result.title);
 
-      // Add star indicator for preferred language
-      const languageIndicator = (preferredLanguage !== 'No Preference' && detectedLanguage === preferredLanguage) ? '⭐ ' : '';
+      // Add star indicator for preferred language or MULTi
+      const languageIndicator = (preferredLanguage !== 'No Preference' && (detectedLanguage === preferredLanguage || detectedLanguage === 'MULTi')) ? '⭐ ' : '';
 
       const baseParams = new URLSearchParams({
         indexerId: String(result.indexerId),
@@ -268,33 +268,65 @@ async function handleStreamRequest(args) {
     .filter(Boolean);
 
   // Insert visual separators between language groups
-  if (groupInfo && groupInfo.preferredCount > 0 && groupInfo.otherCount > 0) {
-    const separatorIndex = groupInfo.separatorIndex;
+  if (groupInfo) {
+    const separators = [];
+    let offset = 0;
 
-    // Create separator entries
-    const preferredSeparator = {
-      name: 'UsenetStreamer',
-      title: `━━━━━ ⭐ ${groupInfo.preferredLanguage} (${groupInfo.preferredCount}) ━━━━━`,
-      url: 'https://stremio.com',
-      behaviorHints: {
-        notWebReady: true
-      }
-    };
+    // Group 1 separator: Preferred Language / MULTi
+    if (groupInfo.preferredCount > 0) {
+      const preferredSeparator = {
+        name: 'UsenetStreamer',
+        title: `━━━━━ ⭐ ${groupInfo.preferredLanguage} / MULTi (${groupInfo.preferredCount}) ━━━━━`,
+        url: 'https://stremio.com',
+        behaviorHints: {
+          notWebReady: true
+        }
+      };
+      separators.push({ index: 0, separator: preferredSeparator });
+      offset++;
+    }
 
-    const otherSeparator = {
-      name: 'UsenetStreamer',
-      title: `━━━━━ 🌍 Other Languages (${groupInfo.otherCount}) ━━━━━`,
-      url: 'https://stremio.com',
-      behaviorHints: {
-        notWebReady: true
-      }
-    };
+    // Group 2 separator: Complete Bluray (may contain preferred language)
+    if (groupInfo.completeBlurayCount > 0) {
+      const completeBlurayIndex = groupInfo.group2SeparatorIndex + offset;
+      const completeBlurayTitle = `━━━━━ 💿 Complete Bluray - May contain ${groupInfo.preferredLanguage} (${groupInfo.completeBlurayCount}) ━━━━━`;
+      const completeBlurayTitleShort = `━━━━━ 💿 Complete Bluray (${groupInfo.completeBlurayCount}) ━━━━━`;
 
-    // Insert separators at the beginning of each group
-    streams.splice(separatorIndex, 0, otherSeparator);
-    streams.splice(0, 0, preferredSeparator);
+      const completeBlurayLabel = groupInfo.preferredCount > 0 ? completeBlurayTitle : completeBlurayTitleShort;
 
-    console.log(`[STREMIO] Added language group separators at positions 0 and ${separatorIndex + 1}`);
+      const completeBluraySeparator = {
+        name: 'UsenetStreamer',
+        title: completeBlurayLabel,
+        url: 'https://stremio.com',
+        behaviorHints: {
+          notWebReady: true
+        }
+      };
+      separators.push({ index: completeBlurayIndex, separator: completeBluraySeparator });
+      offset++;
+    }
+
+    // Group 3 separator: Other Languages
+    if (groupInfo.otherCount > 0) {
+      const otherIndex = groupInfo.group3SeparatorIndex + offset;
+      const otherSeparator = {
+        name: 'UsenetStreamer',
+        title: `━━━━━ 🌍 Other Languages (${groupInfo.otherCount}) ━━━━━`,
+        url: 'https://stremio.com',
+        behaviorHints: {
+          notWebReady: true
+        }
+      };
+      separators.push({ index: otherIndex, separator: otherSeparator });
+    }
+
+    // Insert separators in reverse order to maintain correct indices
+    for (let i = separators.length - 1; i >= 0; i--) {
+      const { index, separator } = separators[i];
+      streams.splice(index, 0, separator);
+    }
+
+    console.log(`[STREMIO] Added ${separators.length} language group separators`);
   }
 
   console.log(`[STREMIO] Returning ${streams.length} NZB streams`);
