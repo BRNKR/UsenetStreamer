@@ -17,7 +17,8 @@ const { validateUserData } = require('./src/middleware/auth');
 const { generateLandingPage } = require('./src/utils/landingPage');
 
 // Create addon builder with base manifest
-const manifest = getManifestConfig(false);
+// If password is set, include config fields in manifest
+const manifest = getManifestConfig(!!MANIFEST_AUTH_PASSWORD);
 const builder = new addonBuilder(manifest);
 
 // Define stream handler
@@ -68,8 +69,32 @@ app.get('/configure', (req, res) => {
 app.get('/nzb/stream', handleNzbdavStream);
 app.head('/nzb/stream', handleNzbdavStream);
 
-// Mount the addon interface routes
-// The SDK's getRouter handles manifest and stream endpoints
+// Custom manifest endpoints to handle authentication properly
+// These override the SDK's default manifest routes
+app.get('/manifest.json', (req, res) => {
+  if (MANIFEST_AUTH_PASSWORD) {
+    // Return manifest with config requirement
+    const manifest = getManifestConfig(true);
+    res.json(manifest);
+  } else {
+    // No password, use SDK's manifest
+    res.json(addonInterface.manifest);
+  }
+});
+
+app.get('/:userData/manifest.json', validateUserData, (req, res) => {
+  // User authenticated, return manifest without config requirement
+  const manifest = getManifestConfig(false);
+  res.json(manifest);
+});
+
+// Authentication middleware for stream routes with userData prefix
+if (MANIFEST_AUTH_PASSWORD) {
+  app.use('/:userData/stream', validateUserData);
+}
+
+// Mount the addon interface routes for stream endpoints
+// The SDK's getRouter handles stream endpoints
 const addonRouter = getRouter(addonInterface);
 app.use(addonRouter);
 
