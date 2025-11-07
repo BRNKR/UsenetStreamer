@@ -3,6 +3,7 @@ const { ensureAddonConfigured, ensureProwlarrConfigured, ensureNzbdavConfigured,
 const { pickFirstDefined, normalizeImdb, normalizeNumericId, extractYear } = require('../utils/parsers');
 const { fetchCinemetaMetadata } = require('../services/cinemeta');
 const { searchProwlarr } = require('../services/prowlarr');
+const { detectLanguage, extractQuality, matchesQualityFilter, sortStreams } = require('../utils/streamFilters');
 
 /**
  * Collect values from multiple sources using extractors
@@ -37,10 +38,18 @@ function collectValues(metaSources, ...extractors) {
  * @returns {Promise<object>} Stream response with streams array
  */
 async function handleStreamRequest(args) {
-  const { type, id } = args;
+  const { type, id, config } = args;
   const meta = args.extra || {};
 
+  // Extract user preferences from config
+  const userConfig = config || {};
+  const preferredLanguage = userConfig.preferredLanguage || 'No Preference';
+  const sortMethod = userConfig.sortMethod || 'Quality First';
+  const qualityFilter = userConfig.qualityFilter || 'All';
+  const maxResults = parseInt(userConfig.maxResults, 10) || 0;
+
   console.log(`[REQUEST] Received request for ${type} ID: ${id}`);
+  console.log(`[CONFIG] User preferences:`, { preferredLanguage, sortMethod, qualityFilter, maxResults });
 
   const primaryId = id.split(':')[0];
   if (!isValidImdbId(id)) {
@@ -186,16 +195,39 @@ async function handleStreamRequest(args) {
     primaryId
   });
 
+  // Apply quality filter
+  let filteredResults = finalNzbResults;
+  if (qualityFilter !== 'All') {
+    filteredResults = finalNzbResults.filter((result) => {
+      const quality = extractQuality(result.title);
+      return matchesQualityFilter(quality, qualityFilter);
+    });
+    console.log(`[FILTER] Quality filter '${qualityFilter}' reduced results from ${finalNzbResults.length} to ${filteredResults.length}`);
+  }
+
+  // Sort results based on user preference
+  const sortedResults = sortStreams(filteredResults, sortMethod, preferredLanguage);
+  console.log(`[SORT] Applied sorting method: ${sortMethod}`);
+
+  // Limit results if maxResults is set
+  let limitedResults = sortedResults;
+  if (maxResults > 0 && sortedResults.length > maxResults) {
+    limitedResults = sortedResults.slice(0, maxResults);
+    console.log(`[LIMIT] Limited results from ${sortedResults.length} to ${maxResults}`);
+  }
+
   const addonBaseUrl = ADDON_BASE_URL.replace(/\/$/, '');
 
-  const streams = finalNzbResults
-    .sort((a, b) => (b.size || 0) - (a.size || 0))
+  const streams = limitedResults
     .map((result) => {
       const sizeInGB = result.size ? (result.size / 1073741824).toFixed(2) : null;
       const sizeString = sizeInGB ? `${sizeInGB} GB` : 'Size Unknown';
 
-      const qualityMatch = result.title?.match(/(2160p|4K|UHD|1080p|720p|480p)/i);
-      const quality = qualityMatch ? qualityMatch[0] : '';
+      const quality = extractQuality(result.title) || '';
+      const detectedLanguage = detectLanguage(result.title);
+
+      // Add star indicator for preferred language
+      const languageIndicator = (preferredLanguage !== 'No Preference' && detectedLanguage === preferredLanguage) ? '⭐ ' : '';
 
       const baseParams = new URLSearchParams({
         indexerId: String(result.indexerId),
@@ -215,8 +247,16 @@ async function handleStreamRequest(args) {
         bingeGroup: 'usenetstreamer'
       };
 
+      // Build title with language indicator, quality, size, and language info
+      const languageLabel = detectedLanguage ? ` [${detectedLanguage}]` : '';
+      const titleParts = [
+        languageIndicator + result.title,
+        ['📰 NZB', quality, sizeString].filter(Boolean).join(' • ') + languageLabel,
+        result.indexer
+      ];
+
       return {
-        title: `${result.title}\n${['📰 NZB', quality, sizeString].filter(Boolean).join(' • ')}\n${result.indexer}`,
+        title: titleParts.join('\n'),
         name,
         url: streamUrl,
         behaviorHints

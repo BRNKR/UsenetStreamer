@@ -34,6 +34,67 @@ function getManifestConfig(requiresConfig = false) {
         type: 'password',
         title: 'UsenetStreamer Password',
         required: true
+      },
+      {
+        key: 'preferredLanguage',
+        type: 'select',
+        title: 'Preferred Audio Language',
+        options: [
+          'No Preference',
+          'English',
+          'Spanish',
+          'French',
+          'German',
+          'Italian',
+          'Portuguese',
+          'Russian',
+          'Japanese',
+          'Korean',
+          'Chinese',
+          'Arabic',
+          'Hindi',
+          'Dutch',
+          'Polish',
+          'Turkish'
+        ],
+        default: 'No Preference',
+        required: false
+      },
+      {
+        key: 'sortMethod',
+        type: 'select',
+        title: 'Sorting Method',
+        options: [
+          'Quality First',
+          'Size First',
+          'Date First'
+        ],
+        default: 'Quality First',
+        required: false
+      },
+      {
+        key: 'qualityFilter',
+        type: 'select',
+        title: 'Show Qualities',
+        options: [
+          'All',
+          '4K/2160p',
+          '1080p',
+          '720p',
+          '480p',
+          '4K + 1080p',
+          '1080p + 720p',
+          '720p + 480p'
+        ],
+        default: 'All',
+        required: false
+      },
+      {
+        key: 'maxResults',
+        type: 'number',
+        title: 'Max Results (0 = unlimited)',
+        default: '0',
+        required: false
       }
     ];
   }
