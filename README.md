@@ -1,6 +1,6 @@
 # UsenetStreamer 🎬
 
-![UsenetStreamer logo](assets/icon.png)
+![UsenetStreamer logo](assets/icon_256x256.png)
 
 **A Stremio addon that integrates your Usenet infrastructure for seamless content delivery**
 

@@ -15,7 +15,7 @@ function getManifestConfig(requiresConfig = false) {
     version: '1.0.0',
     name: 'UsenetStreamer',
     description: 'Usenet-powered instant streams for Stremio via Prowlarr and NZBDav',
-    logo: `${ADDON_BASE_URL.replace(/\/$/, '')}/assets/icon.png`,
+    logo: `${ADDON_BASE_URL.replace(/\/$/, '')}/assets/icon_256x256.png`,
     resources: ['stream'],
     types: ['movie', 'series', 'channel', 'tv'],
     catalogs: [],
