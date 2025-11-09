@@ -19,6 +19,11 @@ function generateLandingPage(manifest) {
   let configFields = '';
   if (hasConfig) {
     manifest.config.forEach(field => {
+      // Skip password field - it's handled by authentication form
+      if (field.key === 'password') {
+        return;
+      }
+
       const required = field.required ? 'required' : '';
       const defaultValue = field.default || '';
 
