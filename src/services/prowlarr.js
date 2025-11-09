@@ -218,10 +218,8 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
     indexerIds
   };
 
-  // Add categories if specified
-  if (categories) {
-    baseSearchParams.categories = categories;
-  }
+  // Note: categories are added conditionally per search plan type
+  // ID-based searches (movie/tvsearch) may not support category filtering
 
   const deriveResultKey = (result) => {
     if (!result) return null;
@@ -239,14 +237,34 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
 
   const planExecutions = searchPlans.map((plan) => {
     console.log('[PROWLARR] Dispatching plan', plan);
+
+    // Prepare search params - categories might not be supported by all search types
+    const searchParams = { ...baseSearchParams, type: plan.type, query: plan.query };
+
+    // For text-based searches, include categories
+    // For ID-based searches, Prowlarr might not support category filtering
+    if (plan.type === 'search' && categories) {
+      searchParams.categories = categories;
+    }
+
     return axios
       .get(`${PROWLARR_URL}/api/v1/search`, {
-        params: { ...baseSearchParams, type: plan.type, query: plan.query },
+        params: searchParams,
         headers: { 'X-Api-Key': PROWLARR_API_KEY },
         timeout: 60000
       })
       .then((response) => ({ plan, status: 'fulfilled', data: response.data }))
-      .catch((error) => ({ plan, status: 'rejected', error }));
+      .catch((error) => {
+        // If search fails with categories, log it
+        if (error.response && error.response.status === 400 && searchParams.categories) {
+          console.warn('[PROWLARR] Search failed with categories, might not be supported for this search type', {
+            type: plan.type,
+            query: plan.query,
+            categories: searchParams.categories
+          });
+        }
+        return { plan, status: 'rejected', error };
+      });
   });
 
   const planResultsSettled = await Promise.all(planExecutions);
