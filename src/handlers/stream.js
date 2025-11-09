@@ -34,6 +34,7 @@ const {
 } = require('../services/nzbdav');
 const { filterAndSortStreams, formatStremioTitle } = require('../utils/streamFilters');
 const { triageAndRank } = require('../../nzbTriageRunner');
+const { encodeStreamToken } = require('../utils/streamToken');
 
 /**
  * Collect values from multiple sources using extractors
@@ -545,26 +546,28 @@ async function handleStreamRequest(args) {
       const historySlot = normalizedTitle ? historyByTitle.get(normalizedTitle) : null;
       const triageInfo = normalizedTitle ? triageTitleMap.get(normalizedTitle) : null;
 
-      // Create stream URL with parameters
-      const baseParams = new URLSearchParams({
+      // Create stream parameters object
+      const streamParams = {
         indexerId: String(result.indexerId),
         type,
-        id
-      });
+        id,
+        downloadUrl: result.downloadUrl
+      };
 
-      baseParams.set('downloadUrl', result.downloadUrl);
-      if (result.guid) baseParams.set('guid', result.guid);
-      if (result.size) baseParams.set('size', String(result.size));
-      if (result.title) baseParams.set('title', result.title);
+      if (result.guid) streamParams.guid = result.guid;
+      if (result.size) streamParams.size = String(result.size);
+      if (result.title) streamParams.title = result.title;
 
       // Add history params if found
       if (historySlot?.nzoId) {
-        baseParams.set('historyNzoId', historySlot.nzoId);
-        if (historySlot.jobName) baseParams.set('historyJobName', historySlot.jobName);
-        if (historySlot.category) baseParams.set('historyCategory', historySlot.category);
+        streamParams.historyNzoId = historySlot.nzoId;
+        if (historySlot.jobName) streamParams.historyJobName = historySlot.jobName;
+        if (historySlot.category) streamParams.historyCategory = historySlot.category;
       }
 
-      const streamUrl = `${addonBaseUrl}/nzb/stream?${baseParams.toString()}`;
+      // Encode parameters into a token for external player compatibility
+      const token = encodeStreamToken(streamParams);
+      const streamUrl = `${addonBaseUrl}/nzb/stream/${token}`;
       const name = 'UsenetStreamer';
       const behaviorHints = {
         notWebReady: true,

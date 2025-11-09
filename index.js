@@ -116,6 +116,10 @@ app.get('/indexers', setCorsHeaders, async (req, res) => {
 // This is done by wrapping the addon interface
 
 // NZB stream endpoint (custom route not handled by SDK)
+// Token-based URL (preferred for external players)
+app.get('/nzb/stream/:token', handleNzbdavStream);
+app.head('/nzb/stream/:token', handleNzbdavStream);
+// Legacy query parameter URL (backward compatibility)
 app.get('/nzb/stream', handleNzbdavStream);
 app.head('/nzb/stream', handleNzbdavStream);
 

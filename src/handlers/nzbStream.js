@@ -1,6 +1,7 @@
 const { getNzbdavCategory, buildNzbdavStream, proxyNzbdavStream, streamFailureVideo, buildNzbdavCacheKey } = require('../services/nzbdav');
 const { parseRequestedEpisode } = require('../utils/parsers');
 const { getOrCreateNzbdavStream } = require('../utils/cache');
+const { extractStreamParams } = require('../utils/streamToken');
 const posixPath = require('path').posix;
 
 /**
@@ -44,6 +45,7 @@ async function handleNzbdavStream(req, res) {
   console.log(`[NZBDAV DEBUG] Method: ${req.method}`);
   console.log(`[NZBDAV DEBUG] URL: ${req.url}`);
   console.log(`[NZBDAV DEBUG] Full path: ${req.protocol}://${req.get('host')}${req.originalUrl}`);
+  console.log(`[NZBDAV DEBUG] Has token param:`, !!req.params?.token);
   console.log(`[NZBDAV DEBUG] Query params:`, req.query);
   console.log(`[NZBDAV DEBUG] Headers:`, {
     'user-agent': req.headers['user-agent'],
@@ -53,28 +55,35 @@ async function handleNzbdavStream(req, res) {
   });
   console.log('═══════════════════════════════════════════════════════════');
 
-  const { downloadUrl, type = 'movie', id = '', title = 'NZB Stream' } = req.query;
+  // Extract parameters from token or query params
+  const params = extractStreamParams(req);
 
-  if (!downloadUrl) {
+  if (!params || !params.downloadUrl) {
     console.error('[NZBDAV ERROR] Missing downloadUrl parameter!');
+    console.error('[NZBDAV ERROR] Token present:', !!req.params?.token);
     console.error('[NZBDAV ERROR] Available query params:', Object.keys(req.query));
-    res.status(400).json({ error: 'downloadUrl query parameter is required' });
+    res.status(400).json({
+      error: 'downloadUrl parameter is required',
+      hint: 'Use token-based URL for external players: /nzb/stream/<token>'
+    });
     return;
   }
 
+  const { downloadUrl, type = 'movie', id = '', title = 'NZB Stream' } = params;
+
   try {
     const category = getNzbdavCategory(type);
-    const requestedEpisode = parseRequestedEpisode(type, id, req.query || {});
+    const requestedEpisode = parseRequestedEpisode(type, id, params);
 
     // Build cache key using service function
     const cacheKey = buildNzbdavCacheKey(downloadUrl, category, requestedEpisode);
 
-    // Extract history slot hint from query params for reuse
-    const existingSlotHint = req.query.historyNzoId
+    // Extract history slot hint from params for reuse
+    const existingSlotHint = params.historyNzoId
       ? {
-          nzoId: req.query.historyNzoId,
-          jobName: req.query.historyJobName,
-          category: req.query.historyCategory
+          nzoId: params.historyNzoId,
+          jobName: params.historyJobName,
+          category: params.historyCategory
         }
       : null;
 
