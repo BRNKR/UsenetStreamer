@@ -696,6 +696,8 @@ async function proxyNzbdavStream(req, res, viewPath, fileNameHint = '', streamDa
   const headers = {};
 
   console.log(`[NZBDAV] Streaming ${normalizedPath} via WebDAV`);
+  console.log(`[NZBDAV] Target URL: ${targetUrl}`);
+  console.log(`[NZBDAV] Original method: ${originalMethod}, Proxied method: ${proxiedMethod}, Emulate HEAD: ${emulateHead}`);
 
   const coerceToString = (value) => {
     if (Array.isArray(value)) {
@@ -909,6 +911,16 @@ async function proxyNzbdavStream(req, res, viewPath, fileNameHint = '', streamDa
   // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Expose-Headers', 'Content-Length,Content-Range,Content-Type,Accept-Ranges');
+
+  // Debug: Log final response headers for external player troubleshooting
+  console.log('[NZBDAV] Final response headers:', {
+    'status': responseStatus,
+    'content-type': res.getHeader('Content-Type'),
+    'content-length': res.getHeader('Content-Length'),
+    'content-range': res.getHeader('Content-Range'),
+    'accept-ranges': res.getHeader('Accept-Ranges'),
+    'x-total-length': res.getHeader('X-Total-Length')
+  });
 
   // Handle HEAD requests or non-streamable responses
   if (emulateHead || !nzbdavResponse.data || typeof nzbdavResponse.data.pipe !== 'function') {

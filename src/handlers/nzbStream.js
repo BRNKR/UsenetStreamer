@@ -38,9 +38,26 @@ function inferMimeType(fileName) {
  * @param {object} res - Express response
  */
 async function handleNzbdavStream(req, res) {
+  // Debug logging for external player troubleshooting
+  console.log('═══════════════════════════════════════════════════════════');
+  console.log('[NZBDAV DEBUG] Incoming stream request:');
+  console.log(`[NZBDAV DEBUG] Method: ${req.method}`);
+  console.log(`[NZBDAV DEBUG] URL: ${req.url}`);
+  console.log(`[NZBDAV DEBUG] Full path: ${req.protocol}://${req.get('host')}${req.originalUrl}`);
+  console.log(`[NZBDAV DEBUG] Query params:`, req.query);
+  console.log(`[NZBDAV DEBUG] Headers:`, {
+    'user-agent': req.headers['user-agent'],
+    'range': req.headers['range'],
+    'accept': req.headers['accept'],
+    'referer': req.headers['referer']
+  });
+  console.log('═══════════════════════════════════════════════════════════');
+
   const { downloadUrl, type = 'movie', id = '', title = 'NZB Stream' } = req.query;
 
   if (!downloadUrl) {
+    console.error('[NZBDAV ERROR] Missing downloadUrl parameter!');
+    console.error('[NZBDAV ERROR] Available query params:', Object.keys(req.query));
     res.status(400).json({ error: 'downloadUrl query parameter is required' });
     return;
   }
