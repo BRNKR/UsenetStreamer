@@ -350,7 +350,7 @@ function generateLandingPage(manifest) {
       copyButton.addEventListener('click', async function() {
         const config = buildConfig();
         const userData = btoa(JSON.stringify(config));
-        const manifestUrl = 'stremio://' + baseUrl.replace(/^https?:\\/\\//, '') + '/' + userData + '/manifest.json';
+        const manifestUrl = baseUrl + '/' + userData + '/manifest.json';
 
         try {
           await navigator.clipboard.writeText(manifestUrl);
