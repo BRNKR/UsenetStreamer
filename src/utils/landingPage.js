@@ -152,67 +152,101 @@ function generateLandingPage(manifest) {
     .container {
       position: relative;
       width: 100%;
-      max-width: 500px;
-      text-align: center;
+      max-width: 600px;
       animation: fadeIn 0.3s ease-out;
     }
 
+    .card {
+      background: var(--card);
+      border-radius: calc(var(--radius) * 2);
+      box-shadow: 0 4px 28px -5px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05) inset;
+      padding: 2.25rem;
+      margin-bottom: 2rem;
+      border: 1px solid var(--border);
+      animation: fadeIn 0.4s ease-out;
+      position: relative;
+      overflow: hidden;
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 0.3rem;
+      background: linear-gradient(90deg, var(--primary) 0%, hsl(270, 100%, 50%) 100%);
+    }
+
+    .header {
+      display: flex;
+      align-items: flex-start;
+      gap: 1.75rem;
+      margin-bottom: 2.5rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 2rem;
+    }
+
+    .header-content {
+      display: flex;
+      flex-direction: column;
+      flex: 1;
+    }
+
+    .header-title-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+
+    .title {
+      color: var(--card-foreground);
+      margin: 0;
+      font-weight: 600;
+      line-height: 1.2;
+      font-size: 1.75rem;
+      letter-spacing: -0.025em;
+    }
+
     .logo {
-      width: 14vh;
-      height: 14vh;
-      margin: 0 auto 2vh;
-      background: url('${addonLogo}') center center / contain no-repeat;
-      transition: all 0.15s ease;
+      width: 80px;
+      height: 80px;
+      border-radius: calc(var(--radius) * 0.8);
+      object-fit: cover;
+      border: 1px solid var(--border);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      transition: transform 0.2s, box-shadow 0.2s;
     }
 
     .logo:hover {
       transform: translateY(-2px);
-      filter: drop-shadow(0 10px 15px rgba(66, 153, 255, 0.2));
-    }
-
-    h1 {
-      font-size: clamp(2rem, 4.5vh, 3rem);
-      margin-bottom: 1vh;
-      font-weight: 700;
-      background: linear-gradient(135deg, var(--card-foreground) 0%, var(--primary) 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-      background-clip: text;
-    }
-
-    .version {
-      font-size: 1.8vh;
-      color: var(--muted-foreground);
-      margin-bottom: 2vh;
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.2);
     }
 
     .description {
-      font-size: 2vh;
-      line-height: 1.5;
-      margin-bottom: 2vh;
+      font-size: 0.95rem;
+      line-height: 1.6;
       color: var(--muted-foreground);
+      margin-bottom: 0.5rem;
     }
 
-    .types {
-      background: var(--muted);
-      backdrop-filter: blur(10px);
-      padding: 1vh 2vh;
-      border-radius: var(--radius);
-      font-size: 1.8vh;
-      margin-bottom: 3vh;
-      border: 1px solid var(--border);
+    .types-text {
+      font-size: 0.875rem;
+      color: var(--muted-foreground);
+      margin: 0;
     }
 
     form {
-      background: var(--card);
-      backdrop-filter: blur(10px);
-      padding: 2rem;
-      border-radius: calc(var(--radius) * 2);
       text-align: left;
       color: var(--card-foreground);
-      margin-bottom: 2vh;
-      border: 1px solid var(--border);
-      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
+    }
+
+    .install-button-wrapper {
+      text-align: center;
+      padding-top: 1rem;
     }
 
     label {
@@ -392,10 +426,49 @@ function generateLandingPage(manifest) {
       display: none !important;
     }
 
-    .footer {
-      margin-top: 3vh;
-      font-size: 0.875rem;
+    .social-links {
+      display: flex;
+      justify-content: center;
+      gap: 1.25rem;
+      margin-top: 1.5rem;
+    }
+
+    .social-link {
       color: var(--muted-foreground);
+      transition: all 0.15s ease;
+      opacity: 0.75;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .social-link:hover {
+      color: var(--primary);
+      opacity: 1;
+      transform: translateY(-2px);
+    }
+
+    .social-link svg {
+      width: 22px;
+      height: 22px;
+    }
+
+    .border {
+      border-bottom: 1px solid var(--border);
+      max-width: 15%;
+      margin: 1.25rem auto;
+      opacity: 0.5;
+    }
+
+    .footer {
+      text-align: center;
+    }
+
+    .version {
+      color: var(--muted-foreground);
+      text-align: center;
+      font-size: 0.85rem;
+      margin: 0;
     }
 
     /* Custom scrollbar */
@@ -422,8 +495,23 @@ function generateLandingPage(manifest) {
         padding: 1rem;
       }
 
-      form {
+      .card {
         padding: 1.5rem;
+      }
+
+      .header {
+        flex-direction: column;
+        gap: 1.25rem;
+        text-align: center;
+      }
+
+      .header-title-row {
+        flex-direction: column;
+        gap: 1rem;
+      }
+
+      .logo {
+        display: none;
       }
 
       .button-group {
@@ -459,51 +547,83 @@ function generateLandingPage(manifest) {
 </head>
 <body>
   <div class="container">
-    ${addonLogo ? '<div class="logo"></div>' : ''}
-    <h1>${addonName}</h1>
-    <div class="version">v${addonVersion}</div>
-    ${addonDescription ? `<div class="description">${addonDescription}</div>` : ''}
-    ${types ? `<div class="types">${types}</div>` : ''}
-
-    ${hasConfig ? `
-      <!-- Password Authentication Form (shown first) -->
-      <form id="authForm">
-        <div>
-          <label for="auth_password">
-            Enter Password to Configure *
-          </label>
-          <input
-            type="password"
-            id="auth_password"
-            name="auth_password"
-            required
-            autocomplete="off"
-          />
+    <div class="card">
+      <!-- Header Section -->
+      <div class="header">
+        ${addonLogo ? `<img src="${addonLogo}" alt="${addonName}" class="logo" />` : ''}
+        <div class="header-content">
+          <div class="header-title-row">
+            <h1 class="title">${addonName}</h1>
+          </div>
+          ${addonDescription ? `<p class="description">${addonDescription}</p>` : ''}
+          ${types ? `<p class="types-text">${types}</p>` : ''}
         </div>
-        <div class="error-message" id="authError">Invalid password</div>
-        <button type="submit" class="button" id="unlockButton">Unlock Configuration</button>
-      </form>
+      </div>
 
-      <!-- Success Message (shown after auth) -->
-      <div class="success-message" id="authSuccess">✓ Authenticated</div>
+      ${hasConfig ? `
+        <!-- Password Authentication Form (shown first) -->
+        <form id="authForm">
+          <div>
+            <label for="auth_password">
+              Enter Password to Configure *
+            </label>
+            <input
+              type="password"
+              id="auth_password"
+              name="auth_password"
+              required
+              autocomplete="off"
+            />
+          </div>
+          <div class="error-message" id="authError">Invalid password</div>
+          <button type="submit" class="button" id="unlockButton">Unlock Configuration</button>
+        </form>
 
-      <!-- Configuration Form (hidden until authenticated) -->
-      <form id="configForm" class="hidden">
-        ${configFields}
-        <div class="button-group">
-          <button type="submit" class="button">Install</button>
-          <button type="button" class="button secondary-button" id="copyButton">Copy URL</button>
+        <!-- Success Message (shown after auth) -->
+        <div class="success-message" id="authSuccess">✓ Authenticated</div>
+
+        <!-- Configuration Form (hidden until authenticated) -->
+        <form id="configForm" class="hidden">
+          ${configFields}
+          <div class="button-group">
+            <button type="submit" class="button">Install</button>
+            <button type="button" class="button secondary-button" id="copyButton">Copy URL</button>
+          </div>
+          <div class="copy-feedback" id="copyFeedback">✓ URL copied to clipboard!</div>
+        </form>
+      ` : `
+        <div class="install-button-wrapper">
+          <a href="stremio://${ADDON_BASE_URL.replace(/^https?:\/\//, '')}/manifest.json" class="button">
+            Install
+          </a>
         </div>
-        <div class="copy-feedback" id="copyFeedback">✓ URL copied to clipboard!</div>
-      </form>
-    ` : `
-      <a href="stremio://${ADDON_BASE_URL.replace(/^https?:\/\//, '')}/manifest.json" class="button">
-        Install
+      `}
+    </div>
+
+    <!-- Social Links -->
+    <div class="social-links">
+      <a href="https://github.com/BRNKR/UsenetStreamer" target="_blank" rel="noopener noreferrer" class="social-link" title="GitHub">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"></path>
+        </svg>
       </a>
-    `}
+      <a href="https://buymeacoffee.com/brnkr" target="_blank" rel="noopener noreferrer" class="social-link" title="Buy Me a Coffee">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8h1a4 4 0 0 1 0 8h-1"></path>
+          <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z"></path>
+          <line x1="6" y1="1" x2="6" y2="4"></line>
+          <line x1="10" y1="1" x2="10" y2="4"></line>
+          <line x1="14" y1="1" x2="14" y2="4"></line>
+        </svg>
+      </a>
+    </div>
 
+    <!-- Divider -->
+    <div class="border"></div>
+
+    <!-- Footer -->
     <div class="footer">
-      Stremio Addon
+      <p class="version">v${addonVersion}</p>
     </div>
   </div>
 
