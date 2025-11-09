@@ -4,8 +4,8 @@ const { isTorrentResult } = require('../utils/parsers');
 const { ensureProwlarrConfigured } = require('../utils/validators');
 
 /**
- * Fetch available indexers from Prowlarr
- * @returns {Promise<Array>} Array of indexer objects with id, name, and enable status
+ * Fetch available indexers from Prowlarr with their categories
+ * @returns {Promise<Array>} Array of indexer objects with id, name, protocol, and categories
  */
 async function getIndexers() {
   ensureProwlarrConfigured();
@@ -18,15 +18,47 @@ async function getIndexers() {
 
     const indexers = Array.isArray(response.data) ? response.data : [];
 
-    // Filter to only enabled indexers and map to simplified format
+    // Filter to only enabled indexers and map to format with categories
     const enabledIndexers = indexers
-      .filter(indexer => indexer.enable === true)
-      .map(indexer => ({
-        id: indexer.id,
-        name: indexer.name,
-        protocol: indexer.protocol,
-        priority: indexer.priority || 25
-      }))
+      .filter(indexer => indexer && indexer.enable === true)
+      .map(indexer => {
+        // Extract categories from capabilities with error handling
+        const categories = [];
+        try {
+          if (indexer.capabilities && indexer.capabilities.categories && Array.isArray(indexer.capabilities.categories)) {
+            indexer.capabilities.categories.forEach(cat => {
+              if (!cat || !cat.id || !cat.name) return;
+
+              // Main category
+              categories.push({
+                id: cat.id,
+                name: cat.name
+              });
+
+              // Subcategories if they exist
+              if (cat.subCategories && Array.isArray(cat.subCategories)) {
+                cat.subCategories.forEach(subCat => {
+                  if (!subCat || !subCat.id || !subCat.name) return;
+                  categories.push({
+                    id: subCat.id,
+                    name: `${cat.name} > ${subCat.name}`
+                  });
+                });
+              }
+            });
+          }
+        } catch (error) {
+          console.warn(`[PROWLARR] Failed to extract categories for indexer ${indexer.name}:`, error.message);
+        }
+
+        return {
+          id: indexer.id,
+          name: indexer.name,
+          protocol: indexer.protocol,
+          priority: indexer.priority || 25,
+          categories: categories
+        };
+      })
       .sort((a, b) => {
         // Sort by priority (lower number = higher priority), then by name
         if (a.priority !== b.priority) {
@@ -35,7 +67,7 @@ async function getIndexers() {
         return a.name.localeCompare(b.name);
       });
 
-    console.log(`[PROWLARR] Retrieved ${enabledIndexers.length} enabled indexers`);
+    console.log(`[PROWLARR] Retrieved ${enabledIndexers.length} enabled indexers with categories`);
     return enabledIndexers;
   } catch (error) {
     console.error('[PROWLARR] Failed to fetch indexers:', error.message);
@@ -54,9 +86,10 @@ async function getIndexers() {
  * @param {number} params.episodeNum - Episode number (for series)
  * @param {string} params.primaryId - Primary IMDb ID
  * @param {Array<number>} params.selectedIndexers - Array of indexer IDs to search (optional, defaults to all)
+ * @param {object} params.selectedCategories - Object mapping indexer IDs to category IDs (optional)
  * @returns {Promise<Array>} Array of search results
  */
-async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNum, episodeNum, primaryId, selectedIndexers }) {
+async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNum, episodeNum, primaryId, selectedIndexers, selectedCategories }) {
   ensureProwlarrConfigured();
 
   let searchType;
@@ -146,11 +179,47 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
     console.log('[PROWLARR] No indexers selected, using all available indexers');
   }
 
+  // Determine which categories to use
+  // Collect all unique category IDs from all selected indexers
+  let categories = null;
+  if (selectedCategories && typeof selectedCategories === 'object' && Object.keys(selectedCategories).length > 0) {
+    const categorySet = new Set();
+
+    // If specific indexers are selected, only use categories for those indexers
+    if (selectedIndexers && Array.isArray(selectedIndexers) && selectedIndexers.length > 0) {
+      selectedIndexers.forEach(indexerId => {
+        const indexerCategories = selectedCategories[String(indexerId)] || selectedCategories[indexerId];
+        if (Array.isArray(indexerCategories) && indexerCategories.length > 0) {
+          indexerCategories.forEach(catId => categorySet.add(catId));
+        }
+      });
+    } else {
+      // No specific indexers selected, use all category selections
+      Object.values(selectedCategories).forEach(indexerCategories => {
+        if (Array.isArray(indexerCategories) && indexerCategories.length > 0) {
+          indexerCategories.forEach(catId => categorySet.add(catId));
+        }
+      });
+    }
+
+    if (categorySet.size > 0) {
+      categories = Array.from(categorySet).join(',');
+      console.log(`[PROWLARR] Using selected categories: ${categories}`);
+    } else {
+      console.log('[PROWLARR] No valid categories found in selection, using all categories');
+    }
+  } else {
+    console.log('[PROWLARR] No category filtering applied, using all categories');
+  }
+
   const baseSearchParams = {
     limit: '100',
     offset: '0',
     indexerIds
   };
+
+  // Note: categories are added conditionally per search plan type
+  // ID-based searches (movie/tvsearch) may not support category filtering
 
   const deriveResultKey = (result) => {
     if (!result) return null;
@@ -168,14 +237,34 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
 
   const planExecutions = searchPlans.map((plan) => {
     console.log('[PROWLARR] Dispatching plan', plan);
+
+    // Prepare search params - categories might not be supported by all search types
+    const searchParams = { ...baseSearchParams, type: plan.type, query: plan.query };
+
+    // For text-based searches, include categories
+    // For ID-based searches, Prowlarr might not support category filtering
+    if (plan.type === 'search' && categories) {
+      searchParams.categories = categories;
+    }
+
     return axios
       .get(`${PROWLARR_URL}/api/v1/search`, {
-        params: { ...baseSearchParams, type: plan.type, query: plan.query },
+        params: searchParams,
         headers: { 'X-Api-Key': PROWLARR_API_KEY },
         timeout: 60000
       })
       .then((response) => ({ plan, status: 'fulfilled', data: response.data }))
-      .catch((error) => ({ plan, status: 'rejected', error }));
+      .catch((error) => {
+        // If search fails with categories, log it
+        if (error.response && error.response.status === 400 && searchParams.categories) {
+          console.warn('[PROWLARR] Search failed with categories, might not be supported for this search type', {
+            type: plan.type,
+            query: plan.query,
+            categories: searchParams.categories
+          });
+        }
+        return { plan, status: 'rejected', error };
+      });
   });
 
   const planResultsSettled = await Promise.all(planExecutions);

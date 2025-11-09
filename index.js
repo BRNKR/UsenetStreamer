@@ -173,7 +173,8 @@ app.get('/:userData/stream/:type/:id.json', async (req, res, next) => {
 
     res.json(result);
   } catch (error) {
-    console.error('[BRIDGE ERROR]', error);
+    console.error('[BRIDGE ERROR] Stream request failed:', error.message);
+    console.error('[BRIDGE ERROR] Stack trace:', error.stack);
     res.json({ streams: [] });
   }
 });
@@ -193,7 +194,8 @@ app.get('/stream/:type/:id.json', async (req, res, next) => {
 
     res.json(result);
   } catch (error) {
-    console.error('[BRIDGE ERROR]', error);
+    console.error('[BRIDGE ERROR] Stream request failed:', error.message);
+    console.error('[BRIDGE ERROR] Stack trace:', error.stack);
     res.json({ streams: [] });
   }
 });
