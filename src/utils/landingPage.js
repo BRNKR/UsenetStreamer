@@ -25,7 +25,8 @@ function generateLandingPage(manifest) {
       }
 
       const required = field.required ? 'required' : '';
-      const defaultValue = field.default || '';
+      // Use nullish coalescing to handle 0 and false as valid defaults
+      const defaultValue = field.default ?? '';
 
       if (field.type === 'text' || field.type === 'password' || field.type === 'number') {
         configFields += `
