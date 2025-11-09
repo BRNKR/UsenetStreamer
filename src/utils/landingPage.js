@@ -30,8 +30,8 @@ function generateLandingPage(manifest) {
 
       if (field.type === 'text' || field.type === 'password' || field.type === 'number') {
         configFields += `
-          <div style="margin-bottom: 1.5vh;">
-            <label for="${field.key}" style="display: block; margin-bottom: 0.5vh; font-weight: bold;">
+          <div>
+            <label for="${field.key}">
               ${field.title || field.key}${field.required ? ' *' : ''}
             </label>
             <input
@@ -40,35 +40,32 @@ function generateLandingPage(manifest) {
               name="${field.key}"
               value="${defaultValue}"
               ${required}
-              style="width: 100%; padding: 1vh; font-size: 1.8vh; border: 1px solid #ddd; border-radius: 0.5vh;"
             />
           </div>`;
       } else if (field.type === 'checkbox') {
         const checked = defaultValue === 'checked' ? 'checked' : '';
         configFields += `
-          <div style="margin-bottom: 1.5vh;">
-            <label style="display: flex; align-items: center;">
+          <div>
+            <label>
               <input
                 type="checkbox"
                 id="${field.key}"
                 name="${field.key}"
                 ${checked}
-                style="margin-right: 1vh; width: 2vh; height: 2vh;"
               />
-              <span style="font-weight: bold;">${field.title || field.key}</span>
+              <span>${field.title || field.key}</span>
             </label>
           </div>`;
       } else if (field.type === 'select' && field.options) {
         configFields += `
-          <div style="margin-bottom: 1.5vh;">
-            <label for="${field.key}" style="display: block; margin-bottom: 0.5vh; font-weight: bold;">
+          <div>
+            <label for="${field.key}">
               ${field.title || field.key}${field.required ? ' *' : ''}
             </label>
             <select
               id="${field.key}"
               name="${field.key}"
               ${required}
-              style="width: 100%; padding: 1vh; font-size: 1.8vh; border: 1px solid #ddd; border-radius: 0.5vh;"
             >
               ${field.options.map(opt => {
                 const selected = opt === defaultValue ? 'selected' : '';
@@ -87,121 +84,347 @@ function generateLandingPage(manifest) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>${addonName} - Stremio Addon</title>
   <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    html, body { height: 100%; font-family: Arial, sans-serif; }
+    :root {
+      --background: hsl(224, 71%, 4%);
+      --card: hsl(222, 47%, 7%);
+      --card-foreground: hsl(213, 31%, 91%);
+      --primary: hsl(210, 100%, 50%);
+      --primary-foreground: hsl(222, 47%, 11%);
+      --secondary: hsl(222, 47%, 11%);
+      --muted: hsl(223, 47%, 11%);
+      --muted-foreground: hsl(215, 16%, 70%);
+      --border: hsl(216, 34%, 17%);
+      --input: hsl(222, 47%, 11%);
+      --ring: hsl(212.7, 26.8%, 83.9%);
+      --destructive: hsl(0, 63%, 31%);
+      --radius: 0.5rem;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      height: 100%;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      font-size: 0.95rem;
+      letter-spacing: -0.011rem;
+      line-height: 1.7;
+    }
+
     body {
-      background: #000 url('${addonBackground}') center center / cover no-repeat;
-      color: #fff;
+      background: var(--background);
+      background-image: radial-gradient(ellipse 80% 50% at 50% -20%, hsl(210, 100%, 20%), transparent),
+                        radial-gradient(ellipse 80% 80% at 50% 120%, hsl(224, 71%, 8%), transparent);
+      color: var(--card-foreground);
       display: flex;
       align-items: center;
       justify-content: center;
+      min-height: 100vh;
+      padding: 2rem;
+      animation: fadeIn 0.3s ease-out;
     }
-    .overlay {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(0, 0, 0, 0.7);
-      z-index: 1;
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
+
+    @keyframes pulse {
+      0%, 100% {
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
+      }
+      50% {
+        box-shadow: 0 10px 15px -3px rgba(66, 153, 255, 0.3), 0 4px 6px -2px rgba(66, 153, 255, 0.2);
+      }
+    }
+
     .container {
       position: relative;
-      z-index: 2;
-      width: 40vh;
-      max-width: 90%;
+      width: 100%;
+      max-width: 500px;
       text-align: center;
+      animation: fadeIn 0.3s ease-out;
     }
+
     .logo {
       width: 14vh;
       height: 14vh;
       margin: 0 auto 2vh;
       background: url('${addonLogo}') center center / contain no-repeat;
+      transition: all 0.15s ease;
     }
-    h1 { font-size: 4.5vh; margin-bottom: 1vh; }
-    .version { font-size: 1.8vh; opacity: 0.8; margin-bottom: 2vh; }
-    .description { font-size: 2vh; line-height: 1.5; margin-bottom: 2vh; opacity: 0.9; }
+
+    .logo:hover {
+      transform: translateY(-2px);
+      filter: drop-shadow(0 10px 15px rgba(66, 153, 255, 0.2));
+    }
+
+    h1 {
+      font-size: clamp(2rem, 4.5vh, 3rem);
+      margin-bottom: 1vh;
+      font-weight: 700;
+      background: linear-gradient(135deg, var(--card-foreground) 0%, var(--primary) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .version {
+      font-size: 1.8vh;
+      color: var(--muted-foreground);
+      margin-bottom: 2vh;
+    }
+
+    .description {
+      font-size: 2vh;
+      line-height: 1.5;
+      margin-bottom: 2vh;
+      color: var(--muted-foreground);
+    }
+
     .types {
-      background: rgba(255, 255, 255, 0.1);
+      background: var(--muted);
+      backdrop-filter: blur(10px);
       padding: 1vh 2vh;
-      border-radius: 1vh;
+      border-radius: var(--radius);
       font-size: 1.8vh;
       margin-bottom: 3vh;
+      border: 1px solid var(--border);
     }
+
     form {
-      background: rgba(255, 255, 255, 0.95);
-      padding: 3vh;
-      border-radius: 1vh;
+      background: var(--card);
+      backdrop-filter: blur(10px);
+      padding: 2rem;
+      border-radius: calc(var(--radius) * 2);
       text-align: left;
-      color: #333;
+      color: var(--card-foreground);
       margin-bottom: 2vh;
+      border: 1px solid var(--border);
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3), 0 8px 10px -6px rgba(0, 0, 0, 0.2);
     }
+
+    label {
+      display: block;
+      margin-bottom: 0.5rem;
+      font-weight: 600;
+      font-size: 0.875rem;
+      color: var(--card-foreground);
+    }
+
+    input[type="text"],
+    input[type="password"],
+    input[type="number"],
+    select {
+      width: 100%;
+      padding: 0.625rem 0.875rem;
+      font-size: 0.95rem;
+      background: var(--input);
+      color: var(--card-foreground);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      transition: all 0.15s ease;
+      font-family: inherit;
+    }
+
+    input[type="text"]:hover,
+    input[type="password"]:hover,
+    input[type="number"]:hover,
+    select:hover {
+      border-color: var(--primary);
+    }
+
+    input[type="text"]:focus,
+    input[type="password"]:focus,
+    input[type="number"]:focus,
+    select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(66, 153, 255, 0.15);
+    }
+
+    input[type="checkbox"] {
+      width: 1.25rem;
+      height: 1.25rem;
+      margin-right: 0.75rem;
+      cursor: pointer;
+      accent-color: var(--primary);
+    }
+
     .button {
       display: inline-block;
-      background: #8A5AAB;
-      color: #fff;
-      padding: 2vh 4vh;
-      font-size: 2.2vh;
+      background: var(--primary);
+      color: white;
+      padding: 0.625rem 1.5rem;
+      font-size: 0.95rem;
+      font-weight: 600;
       text-decoration: none;
-      border-radius: 1vh;
+      border-radius: var(--radius);
       border: none;
       cursor: pointer;
-      transition: background 0.3s;
+      transition: all 0.15s ease;
       width: 100%;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3), 0 2px 4px -1px rgba(0, 0, 0, 0.2);
     }
-    .button:hover { background: #7a4a9b; }
-    .button:active { background: #6a3a8b; }
+
+    .button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 10px 15px -3px rgba(66, 153, 255, 0.3), 0 4px 6px -2px rgba(66, 153, 255, 0.2);
+      background: hsl(210, 100%, 45%);
+    }
+
+    .button:active {
+      transform: translateY(1px);
+      box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.2), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+    }
+
     .button:disabled {
-      background: #ccc;
+      background: var(--muted);
+      color: var(--muted-foreground);
       cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
     }
+
     .button-group {
       display: flex;
-      gap: 1vh;
-      margin-top: 2vh;
+      gap: 0.75rem;
+      margin-top: 1.5rem;
     }
+
     .button-group .button {
-      width: calc(50% - 0.5vh);
+      width: calc(50% - 0.375rem);
     }
+
     .secondary-button {
-      background: #5a6a7b;
+      background: var(--secondary);
+      color: var(--card-foreground);
     }
+
     .secondary-button:hover {
-      background: #4a5a6b;
+      background: hsl(222, 47%, 15%);
+      transform: translateY(-1px);
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2);
     }
+
     .secondary-button:active {
-      background: #3a4a5b;
+      transform: translateY(1px);
+      box-shadow: 0 2px 4px -1px rgba(0, 0, 0, 0.2), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
     }
+
     .error-message {
-      color: #d32f2f;
-      font-size: 1.8vh;
-      margin-top: 1vh;
+      color: hsl(0, 84%, 60%);
+      font-size: 0.875rem;
+      margin-top: 0.75rem;
       display: none;
+      padding: 0.5rem;
+      background: hsl(0, 63%, 31%, 0.1);
+      border-radius: var(--radius);
+      border-left: 3px solid hsl(0, 84%, 60%);
     }
+
     .success-message {
-      color: #2e7d32;
-      font-size: 1.8vh;
-      margin-bottom: 2vh;
+      color: hsl(142, 71%, 45%);
+      font-size: 0.875rem;
+      margin-bottom: 1.5rem;
       display: none;
+      padding: 0.75rem;
+      background: var(--card);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      border-left: 3px solid hsl(142, 71%, 45%);
     }
+
     .copy-feedback {
-      color: #2e7d32;
-      font-size: 1.6vh;
-      margin-top: 1vh;
+      color: hsl(142, 71%, 45%);
+      font-size: 0.875rem;
+      margin-top: 0.75rem;
       display: none;
+      padding: 0.5rem;
+      background: hsl(142, 71%, 45%, 0.1);
+      border-radius: var(--radius);
+      border-left: 3px solid hsl(142, 71%, 45%);
     }
+
     .hidden {
       display: none !important;
     }
+
     .footer {
       margin-top: 3vh;
-      font-size: 1.6vh;
-      opacity: 0.7;
+      font-size: 0.875rem;
+      color: var(--muted-foreground);
+    }
+
+    /* Custom scrollbar */
+    ::-webkit-scrollbar {
+      width: 10px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--background);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: var(--muted);
+      border-radius: 5px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: var(--border);
+    }
+
+    /* Responsive adjustments */
+    @media (max-width: 768px) {
+      body {
+        padding: 1rem;
+      }
+
+      form {
+        padding: 1.5rem;
+      }
+
+      .button-group {
+        flex-direction: column;
+      }
+
+      .button-group .button {
+        width: 100%;
+      }
+    }
+
+    /* Form field spacing */
+    form > div {
+      margin-bottom: 1.5rem;
+    }
+
+    form > div:last-of-type {
+      margin-bottom: 0;
+    }
+
+    /* Checkbox container */
+    label:has(input[type="checkbox"]) {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    label:has(input[type="checkbox"]):hover {
+      color: var(--primary);
     }
   </style>
 </head>
 <body>
-  <div class="overlay"></div>
   <div class="container">
     ${addonLogo ? '<div class="logo"></div>' : ''}
     <h1>${addonName}</h1>
@@ -212,8 +435,8 @@ function generateLandingPage(manifest) {
     ${hasConfig ? `
       <!-- Password Authentication Form (shown first) -->
       <form id="authForm">
-        <div style="margin-bottom: 1.5vh;">
-          <label for="auth_password" style="display: block; margin-bottom: 0.5vh; font-weight: bold;">
+        <div>
+          <label for="auth_password">
             Enter Password to Configure *
           </label>
           <input
@@ -222,7 +445,6 @@ function generateLandingPage(manifest) {
             name="auth_password"
             required
             autocomplete="off"
-            style="width: 100%; padding: 1vh; font-size: 1.8vh; border: 1px solid #ddd; border-radius: 0.5vh;"
           />
         </div>
         <div class="error-message" id="authError">Invalid password</div>
