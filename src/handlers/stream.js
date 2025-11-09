@@ -1,9 +1,39 @@
-const { ADDON_BASE_URL } = require('../config/environment');
+const axios = require('axios');
+const {
+  ADDON_BASE_URL,
+  specialCatalogPrefixes,
+  EXTERNAL_SPECIAL_PROVIDER_URL,
+  TRIAGE_ENABLED,
+  TRIAGE_TIME_BUDGET_MS,
+  TRIAGE_MAX_CANDIDATES,
+  TRIAGE_PREFERRED_SIZE_BYTES,
+  TRIAGE_PRIORITY_INDEXERS,
+  TRIAGE_NNTP_CONFIG,
+  TRIAGE_DOWNLOAD_CONCURRENCY,
+  TRIAGE_DOWNLOAD_TIMEOUT_MS,
+  TRIAGE_MAX_CONNECTIONS,
+  TRIAGE_STAT_TIMEOUT_MS,
+  TRIAGE_FETCH_TIMEOUT_MS,
+  TRIAGE_MAX_PARALLEL_NZBS,
+  TRIAGE_STAT_SAMPLE_COUNT,
+  TRIAGE_ARCHIVE_SAMPLE_COUNT,
+  TRIAGE_MAX_DECODED_BYTES,
+  TRIAGE_ARCHIVE_DIRS,
+  toFiniteNumber,
+  toBoolean,
+  parseCommaList
+} = require('../config/environment');
 const { ensureAddonConfigured, ensureProwlarrConfigured, ensureNzbdavConfigured, isValidImdbId } = require('../utils/validators');
 const { pickFirstDefined, normalizeImdb, normalizeNumericId, extractYear } = require('../utils/parsers');
 const { fetchCinemetaMetadata } = require('../services/cinemeta');
 const { searchProwlarr } = require('../services/prowlarr');
+const {
+  normalizeReleaseTitle,
+  fetchCompletedNzbdavHistory,
+  getNzbdavCategory
+} = require('../services/nzbdav');
 const { filterAndSortStreams, formatStremioTitle } = require('../utils/streamFilters');
+const { triageAndRank } = require('../../nzbTriageRunner');
 
 /**
  * Collect values from multiple sources using extractors
@@ -27,6 +57,157 @@ function collectValues(metaSources, ...extractors) {
     }
   }
   return collected;
+}
+
+/**
+ * Check if external special provider is configured
+ * @returns {boolean} True if configured
+ */
+function ensureSpecialProviderConfigured() {
+  return Boolean(EXTERNAL_SPECIAL_PROVIDER_URL);
+}
+
+/**
+ * Clean title for special provider searches
+ * @param {string} rawTitle - Raw title string
+ * @returns {string} Cleaned title
+ */
+function cleanSpecialSearchTitle(rawTitle) {
+  if (!rawTitle || typeof rawTitle !== 'string') return '';
+
+  let cleaned = rawTitle;
+
+  // Remove XXX tags
+  cleaned = cleaned.replace(/\bXXX\b/gi, '');
+
+  // Remove codec info (x264, x265, H264, H265, HEVC)
+  cleaned = cleaned.replace(/\b(x|h)\.?26[45]\b/gi, '');
+  cleaned = cleaned.replace(/\bHEVC\b/gi, '');
+
+  // Remove quality markers (1080p, 720p, 4K, 2160p)
+  cleaned = cleaned.replace(/\b(1080p|720p|480p|4K|2160p|UHD)\b/gi, '');
+
+  // Remove common delimiters
+  cleaned = cleaned.replace(/[._\-]+/g, ' ');
+
+  // Remove year in brackets [2023]
+  cleaned = cleaned.replace(/\[\d{4}\]/g, '');
+
+  // Remove extra spaces
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  return cleaned;
+}
+
+/**
+ * Fetch metadata from external special provider
+ * @param {string} identifier - Full identifier (prefix:id)
+ * @returns {Promise<object|null>} Metadata object with title/name or null
+ */
+async function fetchSpecialMetadata(identifier) {
+  if (!ensureSpecialProviderConfigured()) {
+    console.warn('[SPECIAL META] External provider not configured');
+    return null;
+  }
+
+  if (!identifier || typeof identifier !== 'string') {
+    return null;
+  }
+
+  // Extract provider ID from identifier (format: prefix:id)
+  const parts = identifier.split(':');
+  if (parts.length < 2) {
+    return null;
+  }
+
+  const prefix = parts[0];
+  const providerId = parts.slice(1).join(':');
+
+  if (!providerId) {
+    console.warn(`[SPECIAL META] Invalid identifier format: ${identifier}`);
+    return null;
+  }
+
+  try {
+    // Determine type based on prefix
+    const type = 'movie'; // Special catalogs are typically movie-type content
+    const metaUrl = `${EXTERNAL_SPECIAL_PROVIDER_URL}/meta/${type}/${identifier}.json`;
+
+    console.log(`[SPECIAL META] Fetching metadata from ${metaUrl}`);
+    const response = await axios.get(metaUrl, { timeout: 10000 });
+
+    const meta = response.data?.meta;
+    if (!meta) {
+      console.warn(`[SPECIAL META] No metadata returned for ${identifier}`);
+      return null;
+    }
+
+    const title = meta?.title || meta?.name || null;
+    if (title) {
+      console.log(`[SPECIAL META] Retrieved title: ${title}`);
+      return { title, name: title };
+    }
+
+    return null;
+  } catch (error) {
+    console.warn(`[SPECIAL META] Failed to fetch metadata for ${identifier}: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Extract triage configuration overrides from query parameters
+ * @param {object} query - Query parameters object
+ * @returns {object} Parsed triage overrides
+ */
+function extractTriageOverrides(query) {
+  if (!query || typeof query !== 'object') return {};
+
+  // Parse preferred size
+  const sizeCandidate = query.triageSizeGb ?? query.triage_size_gb ?? query.preferredSizeGb;
+  const sizeGb = toFiniteNumber(sizeCandidate, null);
+  const sizeBytes = Number.isFinite(sizeGb) && sizeGb > 0 ? sizeGb * 1024 * 1024 * 1024 : null;
+
+  // Parse indexer IDs
+  let indexerSource = null;
+  if (typeof query.triageIndexerIds === 'string') {
+    indexerSource = query.triageIndexerIds;
+  } else if (Array.isArray(query.triageIndexerIds)) {
+    indexerSource = query.triageIndexerIds.join(',');
+  }
+  const indexers = indexerSource ? parseCommaList(indexerSource) : null;
+
+  // Parse enabled/disabled flags
+  const disabled = query.triageDisabled !== undefined ? toBoolean(query.triageDisabled, true) : null;
+  const enabled = query.triageEnabled !== undefined ? toBoolean(query.triageEnabled, false) : null;
+
+  return { sizeBytes, indexers, disabled, enabled };
+}
+
+/**
+ * Build a map from normalized titles to triage results
+ * @param {Map} decisions - Map of triage decisions
+ * @returns {Map} Map from normalized title to triage info
+ */
+function buildTriageTitleMap(decisions) {
+  const titleMap = new Map();
+
+  if (!decisions || decisions.size === 0) {
+    return titleMap;
+  }
+
+  for (const [downloadUrl, decision] of decisions) {
+    const normalizedTitle = decision?.normalizedTitle || normalizeReleaseTitle(decision?.title);
+    if (normalizedTitle) {
+      titleMap.set(normalizedTitle, {
+        decision: decision?.decision,
+        blockers: decision?.blockers,
+        downloadUrl
+      });
+    }
+  }
+
+  return titleMap;
 }
 
 /**
@@ -57,8 +238,62 @@ async function handleStreamRequest(args) {
   console.log(`[CONFIG] Raw config from SDK:`, config);
   console.log(`[CONFIG] User preferences:`, { preferredLanguage, sortMethod, qualityFilter, maxResults, selectedIndexers, selectedCategories });
 
+  // Parse baseIdentifier (handles TVDB and special catalog IDs)
+  let baseIdentifier = id;
+  if (type === 'series' && typeof id === 'string') {
+    const parts = id.split(':');
+    if (parts.length >= 3) {
+      const potentialEpisode = Number.parseInt(parts[parts.length - 1], 10);
+      const potentialSeason = Number.parseInt(parts[parts.length - 2], 10);
+      if (Number.isFinite(potentialSeason) && Number.isFinite(potentialEpisode)) {
+        baseIdentifier = parts.slice(0, parts.length - 2).join(':');
+      }
+    }
+  }
+
+  let incomingImdbId = null;
+  let incomingTvdbId = null;
+  let incomingSpecialId = null;
+
+  // Check for IMDb ID
+  if (/^tt\d+$/i.test(baseIdentifier)) {
+    incomingImdbId = baseIdentifier.startsWith('tt') ? baseIdentifier : `tt${baseIdentifier}`;
+    baseIdentifier = incomingImdbId;
+  }
+
+  // Check for TVDB ID
+  const tvdbMatch = baseIdentifier.match(/^tvdb:([0-9]+)(?::.*)?$/i);
+  if (tvdbMatch) {
+    incomingTvdbId = tvdbMatch[1];
+    baseIdentifier = `tvdb:${incomingTvdbId}`;
+  }
+
+  // Check for special catalog IDs
+  const lowerIdentifier = baseIdentifier.toLowerCase();
+  for (const prefix of specialCatalogPrefixes) {
+    const normalizedPrefix = prefix.toLowerCase();
+    if (lowerIdentifier.startsWith(`${normalizedPrefix}:`)) {
+      const remainder = baseIdentifier.slice(prefix.length + 1);
+      if (remainder) {
+        incomingSpecialId = remainder;
+        baseIdentifier = `${prefix}:${remainder}`;
+      }
+      break;
+    }
+  }
+
+  const isSpecialRequest = Boolean(incomingSpecialId);
+
+  console.log('[REQUEST] Parsed identifiers:', {
+    baseIdentifier,
+    incomingImdbId,
+    incomingTvdbId,
+    incomingSpecialId,
+    isSpecialRequest
+  });
+
   const primaryId = id.split(':')[0];
-  if (!isValidImdbId(id)) {
+  if (!incomingTvdbId && !isSpecialRequest && !isValidImdbId(id)) {
     throw new Error(`Unsupported ID prefix for Prowlarr ID search: ${primaryId}`);
   }
 
@@ -98,13 +333,29 @@ async function handleStreamRequest(args) {
   );
 
   const metaSources = [meta];
+
+  // Add TVDB to metaSources if present
+  if (incomingTvdbId) {
+    metaSources.push({ ids: { tvdb: incomingTvdbId }, tvdb_id: incomingTvdbId });
+  }
+
   let cinemetaMeta = null;
 
-  const needsCinemeta = (!hasTitleInQuery) || (type === 'series' && !hasTvdbInQuery) || (type === 'movie' && !hasTmdbInQuery);
+  // Skip Cinemeta for TVDB and special catalogs
+  const needsCinemeta = !incomingTvdbId && !isSpecialRequest && ((!hasTitleInQuery) || (type === 'series' && !hasTvdbInQuery) || (type === 'movie' && !hasTmdbInQuery));
   if (needsCinemeta) {
     cinemetaMeta = await fetchCinemetaMetadata(type, primaryId);
     if (cinemetaMeta) {
       metaSources.push(cinemetaMeta);
+    }
+  }
+
+  // Fetch external metadata for special requests
+  if (isSpecialRequest) {
+    const specialMetadata = await fetchSpecialMetadata(baseIdentifier);
+    if (specialMetadata?.title) {
+      metaSources.push({ title: specialMetadata.title, name: specialMetadata.title });
+      console.log(`[SPECIAL META] Using external metadata: ${specialMetadata.title}`);
     }
   }
 
@@ -159,7 +410,8 @@ async function handleStreamRequest(args) {
           (src) => src?.externals?.tvdb,
           (src) => src?.tvdbSlug,
           (src) => src?.tvdbid
-        )
+        ),
+        incomingTvdbId
       )
     )
   };
@@ -190,6 +442,19 @@ async function handleStreamRequest(args) {
 
   console.log('[REQUEST] Resolved title/year', { movieTitle, releaseYear });
 
+  // Fetch NZBDav history for instant playback
+  const categoryForType = getNzbdavCategory(type);
+  let historyByTitle = new Map();
+
+  try {
+    historyByTitle = await fetchCompletedNzbdavHistory([categoryForType]);
+    if (historyByTitle.size > 0) {
+      console.log(`[NZBDAV] Loaded ${historyByTitle.size} completed NZBs for instant playback`);
+    }
+  } catch (historyError) {
+    console.warn(`[NZBDAV] Unable to load NZBDav history: ${historyError.message}`);
+  }
+
   // Search Prowlarr
   const finalNzbResults = await searchProwlarr({
     metaIds,
@@ -203,9 +468,52 @@ async function handleStreamRequest(args) {
     selectedCategories
   });
 
+  // Integrate NZB triage
+  const triageOverrides = extractTriageOverrides(args.extra || {});
+  const shouldAttemptTriage = finalNzbResults.length > 0 && !triageOverrides.disabled &&
+                              (triageOverrides.enabled || TRIAGE_ENABLED);
+
+  let triageOutcome = null;
+  let triageDecisions = new Map();
+  let triageTitleMap = new Map();
+
+  if (shouldAttemptTriage && TRIAGE_NNTP_CONFIG) {
+    console.log('[TRIAGE] Starting NZB triage process...');
+
+    const triageOptions = {
+      preferredSizeBytes: triageOverrides.sizeBytes ?? TRIAGE_PREFERRED_SIZE_BYTES,
+      preferredIndexerIds: triageOverrides.indexers ?? TRIAGE_PRIORITY_INDEXERS,
+      timeBudgetMs: TRIAGE_TIME_BUDGET_MS,
+      maxCandidates: TRIAGE_MAX_CANDIDATES,
+      nntpConfig: TRIAGE_NNTP_CONFIG,
+      downloadConcurrency: TRIAGE_DOWNLOAD_CONCURRENCY,
+      downloadTimeoutMs: TRIAGE_DOWNLOAD_TIMEOUT_MS,
+      archiveDirs: TRIAGE_ARCHIVE_DIRS,
+      statTimeoutMs: TRIAGE_STAT_TIMEOUT_MS,
+      fetchTimeoutMs: TRIAGE_FETCH_TIMEOUT_MS,
+      maxDecodedBytes: TRIAGE_MAX_DECODED_BYTES,
+      nntpMaxConnections: TRIAGE_MAX_CONNECTIONS,
+      maxParallelNzbs: TRIAGE_MAX_PARALLEL_NZBS,
+      statSampleCount: TRIAGE_STAT_SAMPLE_COUNT,
+      archiveSampleCount: TRIAGE_ARCHIVE_SAMPLE_COUNT
+    };
+
+    try {
+      triageOutcome = await triageAndRank(finalNzbResults, triageOptions);
+      triageDecisions = new Map(triageOutcome?.decisions || []);
+      triageTitleMap = buildTriageTitleMap(triageDecisions);
+      console.log(`[TRIAGE] Completed: ${triageDecisions.size} decisions, ${triageOutcome?.ranked?.length || 0} ranked results`);
+    } catch (error) {
+      console.error(`[TRIAGE] Failed: ${error.message}`);
+    }
+  }
+
+  // Use triaged results if available, otherwise use original results
+  const resultsToStream = triageOutcome?.ranked || finalNzbResults;
+
   // Filter by quality and sort into language groups using video-filename-parser
   const { sortedResults, groupInfo } = filterAndSortStreams(
-    finalNzbResults,
+    resultsToStream,
     sortMethod,
     preferredLanguage,
     qualityFilter
@@ -232,6 +540,11 @@ async function handleStreamRequest(args) {
       // Get parsed data from result (added by filterAndSortStreams)
       const parsed = result.parsed || {};
 
+      // Normalize title for history and triage lookup
+      const normalizedTitle = normalizeReleaseTitle(result.title);
+      const historySlot = normalizedTitle ? historyByTitle.get(normalizedTitle) : null;
+      const triageInfo = normalizedTitle ? triageTitleMap.get(normalizedTitle) : null;
+
       // Create stream URL with parameters
       const baseParams = new URLSearchParams({
         indexerId: String(result.indexerId),
@@ -244,6 +557,13 @@ async function handleStreamRequest(args) {
       if (result.size) baseParams.set('size', String(result.size));
       if (result.title) baseParams.set('title', result.title);
 
+      // Add history params if found
+      if (historySlot?.nzoId) {
+        baseParams.set('historyNzoId', historySlot.nzoId);
+        if (historySlot.jobName) baseParams.set('historyJobName', historySlot.jobName);
+        if (historySlot.category) baseParams.set('historyCategory', historySlot.category);
+      }
+
       const streamUrl = `${addonBaseUrl}/nzb/stream?${baseParams.toString()}`;
       const name = 'UsenetStreamer';
       const behaviorHints = {
@@ -251,14 +571,45 @@ async function handleStreamRequest(args) {
         bingeGroup: 'usenetstreamer'
       };
 
+      // Check if this is an instant stream (cached or in history)
+      const cacheEntry = null; // This would need to be implemented if you have a cache
+      const isInstant = cacheEntry?.status === 'ready' || Boolean(historySlot);
+
+      if (isInstant) {
+        behaviorHints.cached = true;
+        if (historySlot) {
+          behaviorHints.cachedFromHistory = true;
+        }
+      }
+
       // Format clean 3-line title using parser data
       // Line 1: 🎬 {Resolution} • {Audio Codec} {Atmos} {Channels}
       // Line 2: {Emoji} {HDR/DV} • {Source} • {Release Group}
       // Line 3: 💾 {Size} • 📡 {Indexer}
       const { line1, line2, line3 } = formatStremioTitle(parsed, result.size, result.indexer);
 
+      // Build tags array
+      const tags = [];
+
+      // Add instant badge FIRST if applicable
+      if (isInstant) {
+        tags.unshift('⚡ Instant');
+      }
+
+      // Add triage tags if available
+      if (triageInfo?.decision === 'reject') {
+        const blockerText = triageInfo.blockers?.join(', ') || 'Failed triage';
+        tags.push(`❌ ${blockerText}`);
+      }
+
       // Combine lines with newlines, omit empty lines
       const titleLines = [line1, line2, line3].filter(line => line && line.trim());
+
+      // Add tags if any
+      if (tags.length > 0) {
+        titleLines.push(tags.join(' • '));
+      }
+
       const formattedTitle = titleLines.join('\n');
 
       return {
@@ -335,5 +686,10 @@ async function handleStreamRequest(args) {
 }
 
 module.exports = {
-  handleStreamRequest
+  handleStreamRequest,
+  ensureSpecialProviderConfigured,
+  cleanSpecialSearchTitle,
+  fetchSpecialMetadata,
+  extractTriageOverrides,
+  buildTriageTitleMap
 };

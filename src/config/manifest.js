@@ -1,4 +1,4 @@
-const { ADDON_BASE_URL, MANIFEST_AUTH_PASSWORD } = require('./environment');
+const { ADDON_BASE_URL, MANIFEST_AUTH_PASSWORD, SPECIAL_ID_PREFIX } = require('./environment');
 
 /**
  * Generate manifest configuration for the addon
@@ -19,7 +19,7 @@ function getManifestConfig(requiresConfig = false) {
     resources: ['stream'],
     types: ['movie', 'series', 'channel', 'tv'],
     catalogs: [],
-    idPrefixes: ['tt']
+    idPrefixes: ['tt', 'tvdb', 'pt', SPECIAL_ID_PREFIX]
   };
 
   // Add configuration if password is required

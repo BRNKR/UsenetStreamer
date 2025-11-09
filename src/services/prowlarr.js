@@ -1,7 +1,349 @@
 const axios = require('axios');
-const { PROWLARR_URL, PROWLARR_API_KEY, PROWLARR_STRICT_ID_MATCH } = require('../config/environment');
+const xml2js = require('xml2js');
+const {
+  INDEXER_MANAGER,
+  INDEXER_MANAGER_URL,
+  INDEXER_MANAGER_API_KEY,
+  INDEXER_MANAGER_STRICT_ID_MATCH,
+  INDEXER_MANAGER_INDEXERS,
+  INDEXER_MANAGER_BASE_URL,
+  INDEXER_MANAGER_CACHE_MINUTES,
+  INDEXER_MANAGER_LABEL,
+  // Legacy exports for backward compatibility
+  PROWLARR_URL,
+  PROWLARR_API_KEY,
+  PROWLARR_STRICT_ID_MATCH
+} = require('../config/environment');
 const { isTorrentResult } = require('../utils/parsers');
 const { ensureProwlarrConfigured } = require('../utils/validators');
+
+/**
+ * Check if using Prowlarr as the indexer manager
+ * @returns {boolean}
+ */
+function isUsingProwlarr() {
+  return INDEXER_MANAGER === 'prowlarr';
+}
+
+/**
+ * Check if using NZBHydra as the indexer manager
+ * @returns {boolean}
+ */
+function isUsingNzbhydra() {
+  return INDEXER_MANAGER === 'nzbhydra';
+}
+
+/**
+ * Map plan type to NZBHydra search type
+ * @param {string} planType - The search plan type
+ * @returns {string} NZBHydra search type
+ */
+function mapHydraSearchType(planType) {
+  if (planType === 'tvsearch' || planType === 'movie' || planType === 'search' || planType === 'book') {
+    return planType;
+  }
+  return 'search';
+}
+
+/**
+ * Apply a token to NZBHydra search params
+ * @param {string} token - Token like {ImdbId:tt1234}
+ * @param {object} params - Search params object to modify
+ */
+function applyTokenToHydraParams(token, params) {
+  const match = token.match(/^\{([^:]+):(.*)\}$/);
+  if (!match) {
+    return;
+  }
+  const key = match[1].trim().toLowerCase();
+  const rawValue = match[2].trim();
+
+  switch (key) {
+    case 'imdbid': {
+      const value = rawValue.replace(/^tt/i, '');
+      if (value) params.imdbid = value;
+      break;
+    }
+    case 'tmdbid':
+      if (rawValue) params.tmdbid = rawValue;
+      break;
+    case 'tvdbid':
+      if (rawValue) params.tvdbid = rawValue;
+      break;
+    case 'season':
+      if (rawValue) params.season = rawValue;
+      break;
+    case 'episode':
+      if (rawValue) params.ep = rawValue;
+      break;
+    default:
+      break;
+  }
+}
+
+/**
+ * Build search params for NZBHydra
+ * @param {object} plan - Search plan
+ * @returns {object} NZBHydra search params
+ */
+function buildHydraSearchParams(plan) {
+  const params = {
+    apikey: INDEXER_MANAGER_API_KEY,
+    t: mapHydraSearchType(plan.type),
+    o: 'json'
+  };
+
+  if (INDEXER_MANAGER_INDEXERS) {
+    params.indexers = INDEXER_MANAGER_INDEXERS;
+  }
+
+  if (INDEXER_MANAGER_CACHE_MINUTES > 0) {
+    params.cachetime = String(INDEXER_MANAGER_CACHE_MINUTES);
+  }
+
+  if (Array.isArray(plan.tokens)) {
+    plan.tokens.forEach((token) => applyTokenToHydraParams(token, params));
+  }
+
+  if (plan.rawQuery) {
+    params.q = plan.rawQuery;
+  } else if ((!plan.tokens || plan.tokens.length === 0) && plan.query) {
+    params.q = plan.query;
+  }
+
+  return params;
+}
+
+/**
+ * Extract newznab attributes from NZBHydra item
+ * @param {object} item - NZBHydra result item
+ * @returns {object} Map of attribute names to values
+ */
+function extractHydraAttrMap(item) {
+  const attrMap = {};
+  const attrSources = [];
+
+  const collectSource = (source) => {
+    if (!source) return;
+    if (Array.isArray(source)) {
+      source.forEach((entry) => attrSources.push(entry));
+    } else {
+      attrSources.push(source);
+    }
+  };
+
+  collectSource(item.attr);
+  collectSource(item.attrs);
+  collectSource(item.attributes);
+  collectSource(item['newznab:attr']);
+  collectSource(item['newznab:attrs']);
+
+  attrSources.forEach((attr) => {
+    if (!attr) return;
+    const entry = attr['@attributes'] || attr.attributes || attr.$ || attr;
+    const rawName =
+      entry.name ??
+      entry.Name ??
+      entry['@name'] ??
+      entry['@Name'] ??
+      entry.key ??
+      entry.Key ??
+      entry['@key'] ??
+      entry['@Key'] ??
+      entry.field ??
+      entry.Field ??
+      '';
+    const name = rawName.toString().trim().toLowerCase();
+    if (!name) return;
+    const value =
+      entry.value ??
+      entry.Value ??
+      entry['@value'] ??
+      entry['@Value'] ??
+      entry.val ??
+      entry.Val ??
+      entry.content ??
+      entry.Content ??
+      entry['#text'] ??
+      entry.text ??
+      entry['@text'];
+    if (value !== undefined && value !== null) {
+      attrMap[name] = value;
+    }
+  });
+
+  return attrMap;
+}
+
+/**
+ * Normalize NZBHydra results to standard format
+ * @param {object} data - NZBHydra response data
+ * @returns {Array} Normalized results array
+ */
+function normalizeHydraResults(data) {
+  if (!data) return [];
+
+  const resolveItems = (payload) => {
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload;
+    if (payload.item) return resolveItems(payload.item);
+    return [payload];
+  };
+
+  const channel = data.channel || data.rss?.channel || data['rss']?.channel;
+  const items = resolveItems(channel || data.item || []);
+
+  const results = [];
+
+  for (const item of items) {
+    if (!item) continue;
+    const title = item.title || item['title'] || null;
+
+    let downloadUrl = null;
+    const enclosure = item.enclosure || item['enclosure'];
+    if (enclosure) {
+      const enclosureObj = Array.isArray(enclosure) ? enclosure[0] : enclosure;
+      downloadUrl = enclosureObj?.url || enclosureObj?.['@url'] || enclosureObj?.href || enclosureObj?.link;
+    }
+    if (!downloadUrl) {
+      downloadUrl = item.link || item['link'];
+    }
+    if (!downloadUrl) {
+      const guid = item.guid || item['guid'];
+      if (typeof guid === 'string') {
+        downloadUrl = guid;
+      } else if (guid && typeof guid === 'object') {
+        downloadUrl = guid._ || guid['#text'] || guid.url || guid.href;
+      }
+    }
+    if (!downloadUrl) {
+      continue;
+    }
+
+    const attrMap = extractHydraAttrMap(item);
+    const resolveFirst = (...candidates) => {
+      for (const candidate of candidates) {
+        if (candidate === undefined || candidate === null) continue;
+        if (Array.isArray(candidate)) {
+          const inner = resolveFirst(...candidate);
+          if (inner !== undefined && inner !== null) return inner;
+          continue;
+        }
+        if (typeof candidate === 'string') {
+          const trimmed = candidate.trim();
+          if (!trimmed) continue;
+          return trimmed;
+        }
+        return candidate;
+      }
+      return undefined;
+    };
+
+    const enclosureObj = Array.isArray(enclosure) ? enclosure?.[0] : enclosure;
+    const enclosureLength = enclosureObj?.length || enclosureObj?.['@length'] || enclosureObj?.['$']?.length || enclosureObj?.['@attributes']?.length;
+
+    const sizeValue = resolveFirst(
+      attrMap.size,
+      attrMap.filesize,
+      attrMap['contentlength'],
+      attrMap['content-length'],
+      attrMap.length,
+      attrMap.nzbsize,
+      item.size,
+      item.Size,
+      enclosureLength
+    );
+    const parsedSize = sizeValue !== undefined ? Number.parseInt(String(sizeValue), 10) : NaN;
+    const indexer = resolveFirst(
+      attrMap.indexername,
+      attrMap.indexer,
+      attrMap['hydraindexername'],
+      attrMap['hydraindexer'],
+      item.hydraIndexerName,
+      item.hydraindexername,
+      item.hydraIndexer,
+      item.hydraindexer,
+      item.indexer,
+      item.Indexer
+    );
+    const indexerId = resolveFirst(attrMap.indexerid, attrMap['hydraindexerid'], item.hydraIndexerId, item.hydraindexerid, indexer) || 'nzbhydra';
+
+    const guidRaw = item.guid || item['guid'];
+    let guidValue = null;
+    if (typeof guidRaw === 'string') {
+      guidValue = guidRaw;
+    } else if (guidRaw && typeof guidRaw === 'object') {
+      guidValue = guidRaw._ || guidRaw['#text'] || guidRaw.url || guidRaw.href || null;
+    }
+
+    results.push({
+      title: title || downloadUrl,
+      downloadUrl,
+      guid: guidValue,
+      size: Number.isFinite(parsedSize) ? parsedSize : undefined,
+      indexer,
+      indexerId
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Execute NZBHydra search
+ * @param {object} plan - Search plan
+ * @returns {Promise<Array>} Search results
+ */
+async function executeNzbhydraSearch(plan) {
+  const params = buildHydraSearchParams(plan);
+  const response = await axios.get(`${INDEXER_MANAGER_BASE_URL}/api`, {
+    params,
+    timeout: 60000
+  });
+  return normalizeHydraResults(response.data);
+}
+
+/**
+ * Build search params for Prowlarr
+ * @param {object} plan - Search plan
+ * @returns {object} Prowlarr search params
+ */
+function buildProwlarrSearchParams(plan) {
+  return {
+    limit: '100',
+    offset: '0',
+    type: plan.type,
+    query: plan.query,
+    indexerIds: INDEXER_MANAGER_INDEXERS || '-1'
+  };
+}
+
+/**
+ * Execute Prowlarr search
+ * @param {object} plan - Search plan
+ * @returns {Promise<Array>} Search results
+ */
+async function executeProwlarrSearch(plan) {
+  const params = buildProwlarrSearchParams(plan);
+  const response = await axios.get(`${INDEXER_MANAGER_BASE_URL}/api/v1/search`, {
+    params,
+    headers: { 'X-Api-Key': INDEXER_MANAGER_API_KEY },
+    timeout: 60000
+  });
+  return Array.isArray(response.data) ? response.data : [];
+}
+
+/**
+ * Execute indexer search plan (routes to Prowlarr or NZBHydra)
+ * @param {object} plan - Search plan
+ * @returns {Promise<Array>} Search results
+ */
+function executeIndexerPlan(plan) {
+  if (isUsingNzbhydra()) {
+    return executeNzbhydraSearch(plan);
+  }
+  return executeProwlarrSearch(plan);
+}
 
 /**
  * Fetch available indexers from Prowlarr with their categories
@@ -125,7 +467,7 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
       return false;
     }
     seenPlans.add(planKey);
-    searchPlans.push({ type: planType, query });
+    searchPlans.push({ type: planType, query, tokens });
     return true;
   };
 
@@ -147,7 +489,7 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
   }
 
   // Add text-based search if not in strict mode
-  if (!PROWLARR_STRICT_ID_MATCH) {
+  if (!INDEXER_MANAGER_STRICT_ID_MATCH) {
     const textQueryParts = [];
     if (movieTitle) {
       textQueryParts.push(movieTitle);
@@ -159,27 +501,27 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
     }
 
     const textQueryFallback = (textQueryParts.join(' ').trim() || primaryId).trim();
-    const addedTextPlan = addPlan('search', { rawQuery: textQueryFallback });
+    const addedTextPlan = addPlan('search', { rawQuery: textQueryFallback, tokens: [] });
     if (addedTextPlan) {
-      console.log('[PROWLARR] Added text search plan', { query: textQueryFallback });
+      console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] Added text search plan`, { query: textQueryFallback });
     } else {
-      console.log('[PROWLARR] Text search plan already present', { query: textQueryFallback });
+      console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] Text search plan already present`, { query: textQueryFallback });
     }
   } else {
-    console.log('[PROWLARR] Strict ID matching enabled; skipping text-based search');
+    console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] Strict ID matching enabled; skipping text-based search`);
   }
 
-  // Determine which indexers to use
+  // Determine which indexers to use (Prowlarr-specific)
   let indexerIds = '-1'; // Default: all indexers
   if (selectedIndexers && Array.isArray(selectedIndexers) && selectedIndexers.length > 0) {
     // Use only selected indexers
     indexerIds = selectedIndexers.join(',');
-    console.log(`[PROWLARR] Using selected indexers: ${indexerIds}`);
+    console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] Using selected indexers: ${indexerIds}`);
   } else {
-    console.log('[PROWLARR] No indexers selected, using all available indexers');
+    console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] No indexers selected, using all available indexers`);
   }
 
-  // Determine which categories to use
+  // Determine which categories to use (Prowlarr-specific)
   // Collect all unique category IDs from all selected indexers
   let categories = null;
   if (selectedCategories && typeof selectedCategories === 'object' && Object.keys(selectedCategories).length > 0) {
@@ -204,22 +546,13 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
 
     if (categorySet.size > 0) {
       categories = Array.from(categorySet).join(',');
-      console.log(`[PROWLARR] Using selected categories: ${categories}`);
+      console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] Using selected categories: ${categories}`);
     } else {
-      console.log('[PROWLARR] No valid categories found in selection, using all categories');
+      console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] No valid categories found in selection, using all categories`);
     }
   } else {
-    console.log('[PROWLARR] No category filtering applied, using all categories');
+    console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] No category filtering applied, using all categories`);
   }
-
-  const baseSearchParams = {
-    limit: '100',
-    offset: '0',
-    indexerIds
-  };
-
-  // Note: categories are added conditionally per search plan type
-  // ID-based searches (movie/tvsearch) may not support category filtering
 
   const deriveResultKey = (result) => {
     if (!result) return null;
@@ -230,37 +563,33 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
     return `${indexerId}|${indexer}|${title}|${size}`;
   };
 
-  const usingStrictIdMatching = PROWLARR_STRICT_ID_MATCH;
+  const usingStrictIdMatching = INDEXER_MANAGER_STRICT_ID_MATCH;
   const resultsByKey = usingStrictIdMatching ? null : new Map();
   const aggregatedResults = usingStrictIdMatching ? [] : null;
   const planSummaries = [];
 
   const planExecutions = searchPlans.map((plan) => {
-    console.log('[PROWLARR] Dispatching plan', plan);
+    console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] Dispatching plan`, plan);
 
-    // Prepare search params - categories might not be supported by all search types
-    const searchParams = { ...baseSearchParams, type: plan.type, query: plan.query };
-
-    // For text-based searches, include categories
-    // For ID-based searches, Prowlarr might not support category filtering
-    if (plan.type === 'search' && categories) {
-      searchParams.categories = categories;
+    // For Prowlarr, add indexer and category params
+    if (isUsingProwlarr()) {
+      plan.indexerIds = indexerIds;
+      // For text-based searches, include categories
+      // For ID-based searches, Prowlarr might not support category filtering
+      if (plan.type === 'search' && categories) {
+        plan.categories = categories;
+      }
     }
 
-    return axios
-      .get(`${PROWLARR_URL}/api/v1/search`, {
-        params: searchParams,
-        headers: { 'X-Api-Key': PROWLARR_API_KEY },
-        timeout: 60000
-      })
-      .then((response) => ({ plan, status: 'fulfilled', data: response.data }))
+    return executeIndexerPlan(plan)
+      .then((data) => ({ plan, status: 'fulfilled', data }))
       .catch((error) => {
         // If search fails with categories, log it
-        if (error.response && error.response.status === 400 && searchParams.categories) {
-          console.warn('[PROWLARR] Search failed with categories, might not be supported for this search type', {
+        if (error.response && error.response.status === 400 && plan.categories) {
+          console.warn(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] Search failed with categories, might not be supported for this search type`, {
             type: plan.type,
             query: plan.query,
-            categories: searchParams.categories
+            categories: plan.categories
           });
         }
         return { plan, status: 'rejected', error };
@@ -272,7 +601,7 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
   for (const result of planResultsSettled) {
     const { plan } = result;
     if (result.status === 'rejected') {
-      console.error('[PROWLARR] ❌ Search plan failed', {
+      console.error(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] ❌ Search plan failed`, {
         message: result.error.message,
         type: plan.type,
         query: plan.query
@@ -289,7 +618,7 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
     }
 
     const planResults = Array.isArray(result.data) ? result.data : [];
-    console.log(`[PROWLARR] ✅ ${plan.type} returned ${planResults.length} total results for query "${plan.query}"`);
+    console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] ✅ ${plan.type} returned ${planResults.length} total results for query "${plan.query}"`);
 
     const filteredResults = planResults.filter((item) => {
       if (!item || typeof item !== 'object') {
@@ -324,19 +653,19 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
       filtered: filteredResults.length,
       uniqueAdded: addedCount
     });
-    console.log('[PROWLARR] ✅ Plan summary', planSummaries[planSummaries.length - 1]);
+    console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] ✅ Plan summary`, planSummaries[planSummaries.length - 1]);
   }
 
   const aggregationCount = usingStrictIdMatching ? aggregatedResults.length : resultsByKey.size;
   if (aggregationCount === 0) {
-    console.warn(`[PROWLARR] ⚠ All ${searchPlans.length} search plans returned no NZB results`);
+    console.warn(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] ⚠ All ${searchPlans.length} search plans returned no NZB results`);
   } else if (usingStrictIdMatching) {
-    console.log('[PROWLARR] ✅ Aggregated NZB results with strict ID matching', {
+    console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] ✅ Aggregated NZB results with strict ID matching`, {
       plansRun: searchPlans.length,
       totalResults: aggregationCount
     });
   } else {
-    console.log('[PROWLARR] ✅ Aggregated unique NZB results', {
+    console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] ✅ Aggregated unique NZB results`, {
       plansRun: searchPlans.length,
       uniqueResults: aggregationCount
     });
@@ -349,7 +678,7 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
   const finalNzbResults = dedupedNzbResults
     .filter((result, index) => {
       if (!result.downloadUrl || !result.indexerId) {
-        console.warn(`[PROWLARR] Skipping NZB result ${index} missing required fields`, {
+        console.warn(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] Skipping NZB result ${index} missing required fields`, {
           hasDownloadUrl: !!result.downloadUrl,
           hasIndexerId: !!result.indexerId,
           title: result.title
@@ -360,7 +689,7 @@ async function searchProwlarr({ metaIds, type, movieTitle, releaseYear, seasonNu
     })
     .map((result) => ({ ...result, _sourceType: 'nzb' }));
 
-  console.log(`[PROWLARR] Final NZB selection: ${finalNzbResults.length} results`);
+  console.log(`[${INDEXER_MANAGER_LABEL.toUpperCase()}] Final NZB selection: ${finalNzbResults.length} results`);
 
   return finalNzbResults;
 }
