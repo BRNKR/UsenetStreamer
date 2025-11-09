@@ -256,6 +256,34 @@ function generateLandingPage(manifest) {
       const copyFeedback = document.getElementById('copyFeedback');
       const baseUrl = window.location.protocol + '//' + window.location.host;
 
+      // Store authenticated password in memory for this session
+      let authenticatedPassword = null;
+
+      // Helper function to build config with password
+      function buildConfig() {
+        const formData = new FormData(configForm);
+        const config = {};
+
+        // Include the authenticated password
+        if (authenticatedPassword) {
+          config.password = authenticatedPassword;
+        }
+
+        // Add all form fields
+        for (let [key, value] of formData.entries()) {
+          const input = configForm.elements[key];
+          if (input.type === 'checkbox') {
+            config[key] = input.checked;
+          } else if (input.type === 'number') {
+            config[key] = parseInt(value, 10) || 0;
+          } else {
+            config[key] = value;
+          }
+        }
+
+        return config;
+      }
+
       // Password authentication
       authForm.addEventListener('submit', async function(e) {
         e.preventDefault();
@@ -280,7 +308,10 @@ function generateLandingPage(manifest) {
           const result = await response.json();
 
           if (result.valid) {
-            // Authentication successful
+            // Authentication successful - save password in memory
+            authenticatedPassword = password;
+
+            // Show authenticated state
             authForm.classList.add('hidden');
             authSuccess.style.display = 'block';
             configForm.classList.remove('hidden');
@@ -303,20 +334,7 @@ function generateLandingPage(manifest) {
       configForm.addEventListener('submit', function(e) {
         e.preventDefault();
 
-        const formData = new FormData(configForm);
-        const config = {};
-
-        for (let [key, value] of formData.entries()) {
-          const input = configForm.elements[key];
-          if (input.type === 'checkbox') {
-            config[key] = input.checked;
-          } else if (input.type === 'number') {
-            config[key] = parseInt(value, 10) || 0;
-          } else {
-            config[key] = value;
-          }
-        }
-
+        const config = buildConfig();
         const userData = btoa(JSON.stringify(config));
         const installUrl = 'stremio://' + baseUrl.replace(/^https?:\\/\\//, '') + '/' + userData + '/manifest.json';
 
@@ -325,20 +343,7 @@ function generateLandingPage(manifest) {
 
       // Copy URL button
       copyButton.addEventListener('click', async function() {
-        const formData = new FormData(configForm);
-        const config = {};
-
-        for (let [key, value] of formData.entries()) {
-          const input = configForm.elements[key];
-          if (input.type === 'checkbox') {
-            config[key] = input.checked;
-          } else if (input.type === 'number') {
-            config[key] = parseInt(value, 10) || 0;
-          } else {
-            config[key] = value;
-          }
-        }
-
+        const config = buildConfig();
         const userData = btoa(JSON.stringify(config));
         const manifestUrl = 'stremio://' + baseUrl.replace(/^https?:\\/\\//, '') + '/' + userData + '/manifest.json';
 
