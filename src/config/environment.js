@@ -20,17 +20,6 @@ function toBoolean(value, defaultValue = false) {
   return defaultValue;
 }
 
-function parseCommaList(value) {
-  if (!value || typeof value !== 'string') return [];
-  return value.split(',').map(s => s.trim()).filter(s => s.length > 0);
-}
-
-function parsePathList(value) {
-  if (!value || typeof value !== 'string') return [];
-  const separator = process.platform === 'win32' ? ';' : ':';
-  return value.split(separator).map(s => s.trim()).filter(s => s.length > 0);
-}
-
 function decodeBase64Value(value) {
   try {
     return Buffer.from(value, 'base64').toString('utf-8');
@@ -113,37 +102,6 @@ const EXTERNAL_SPECIAL_PROVIDER_URL = (() => {
   return decoded ? stripTrailingSlashes(decoded) : '';
 })();
 
-// NZB Triage Configuration
-function buildTriageNntpConfig() {
-  const host = (process.env.NZB_TRIAGE_NNTP_HOST || '').trim();
-  const port = toPositiveInt(process.env.NZB_TRIAGE_NNTP_PORT, 563);
-  const user = (process.env.NZB_TRIAGE_NNTP_USER || '').trim();
-  const pass = (process.env.NZB_TRIAGE_NNTP_PASS || '').trim();
-  const tls = toBoolean(process.env.NZB_TRIAGE_NNTP_TLS, true);
-
-  if (!host || !user || !pass) return null;
-
-  return { host, port, user, pass, tls };
-}
-
-const TRIAGE_ENABLED = toBoolean(process.env.NZB_TRIAGE_ENABLED, false);
-const TRIAGE_TIME_BUDGET_MS = toPositiveInt(process.env.NZB_TRIAGE_TIME_BUDGET_MS, 30000);
-const TRIAGE_MAX_CANDIDATES = toPositiveInt(process.env.NZB_TRIAGE_MAX_CANDIDATES, 25);
-const TRIAGE_PREFERRED_SIZE_GB = toFiniteNumber(process.env.NZB_TRIAGE_PREFERRED_SIZE_GB, 20);
-const TRIAGE_PREFERRED_SIZE_BYTES = TRIAGE_PREFERRED_SIZE_GB > 0 ? TRIAGE_PREFERRED_SIZE_GB * 1024 * 1024 * 1024 : null;
-const TRIAGE_PRIORITY_INDEXERS = parseCommaList(process.env.NZB_TRIAGE_PRIORITY_INDEXERS || '');
-const TRIAGE_DOWNLOAD_CONCURRENCY = toPositiveInt(process.env.NZB_TRIAGE_DOWNLOAD_CONCURRENCY, 8);
-const TRIAGE_DOWNLOAD_TIMEOUT_MS = toPositiveInt(process.env.NZB_TRIAGE_DOWNLOAD_TIMEOUT_MS, 10000);
-const TRIAGE_MAX_CONNECTIONS = toPositiveInt(process.env.NZB_TRIAGE_MAX_CONNECTIONS, 60);
-const TRIAGE_STAT_TIMEOUT_MS = toPositiveInt(process.env.NZB_TRIAGE_STAT_TIMEOUT_MS, 10000);
-const TRIAGE_FETCH_TIMEOUT_MS = toPositiveInt(process.env.NZB_TRIAGE_FETCH_TIMEOUT_MS, 10000);
-const TRIAGE_MAX_PARALLEL_NZBS = toPositiveInt(process.env.NZB_TRIAGE_MAX_PARALLEL_NZBS, 16);
-const TRIAGE_STAT_SAMPLE_COUNT = toPositiveInt(process.env.NZB_TRIAGE_STAT_SAMPLE_COUNT, 6);
-const TRIAGE_ARCHIVE_SAMPLE_COUNT = toPositiveInt(process.env.NZB_TRIAGE_ARCHIVE_SAMPLE_COUNT, 4);
-const TRIAGE_MAX_DECODED_BYTES = toPositiveInt(process.env.NZB_TRIAGE_MAX_DECODED_BYTES, 32768);
-const TRIAGE_ARCHIVE_DIRS = parsePathList(process.env.NZB_TRIAGE_ARCHIVE_DIRS || '');
-const TRIAGE_NNTP_CONFIG = buildTriageNntpConfig();
-
 // External Services
 const CINEMETA_URL = 'https://v3-cinemeta.strem.io/meta';
 
@@ -163,8 +121,6 @@ module.exports = {
   toFiniteNumber,
   toPositiveInt,
   toBoolean,
-  parseCommaList,
-  parsePathList,
 
   // Indexer Manager
   INDEXER_MANAGER,
@@ -214,25 +170,6 @@ module.exports = {
   SPECIAL_ID_PREFIX,
   specialCatalogPrefixes,
   EXTERNAL_SPECIAL_PROVIDER_URL,
-
-  // NZB Triage
-  TRIAGE_ENABLED,
-  TRIAGE_TIME_BUDGET_MS,
-  TRIAGE_MAX_CANDIDATES,
-  TRIAGE_PREFERRED_SIZE_GB,
-  TRIAGE_PREFERRED_SIZE_BYTES,
-  TRIAGE_PRIORITY_INDEXERS,
-  TRIAGE_DOWNLOAD_CONCURRENCY,
-  TRIAGE_DOWNLOAD_TIMEOUT_MS,
-  TRIAGE_MAX_CONNECTIONS,
-  TRIAGE_STAT_TIMEOUT_MS,
-  TRIAGE_FETCH_TIMEOUT_MS,
-  TRIAGE_MAX_PARALLEL_NZBS,
-  TRIAGE_STAT_SAMPLE_COUNT,
-  TRIAGE_ARCHIVE_SAMPLE_COUNT,
-  TRIAGE_MAX_DECODED_BYTES,
-  TRIAGE_ARCHIVE_DIRS,
-  TRIAGE_NNTP_CONFIG,
 
   // External Services
   CINEMETA_URL,
