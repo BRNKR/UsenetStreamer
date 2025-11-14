@@ -1,9 +1,20 @@
-const { ADDON_BASE_URL } = require('../config/environment');
+const axios = require('axios');
+const {
+  ADDON_BASE_URL,
+  specialCatalogPrefixes,
+  EXTERNAL_SPECIAL_PROVIDER_URL
+} = require('../config/environment');
 const { ensureAddonConfigured, ensureProwlarrConfigured, ensureNzbdavConfigured, isValidImdbId } = require('../utils/validators');
 const { pickFirstDefined, normalizeImdb, normalizeNumericId, extractYear } = require('../utils/parsers');
 const { fetchCinemetaMetadata } = require('../services/cinemeta');
-const { searchProwlarr } = require('../services/prowlarr');
+const { searchIndexer } = require('../services/indexer_manager');
+const {
+  normalizeReleaseTitle,
+  fetchCompletedNzbdavHistory,
+  getNzbdavCategory
+} = require('../services/nzbdav');
 const { filterAndSortStreams, formatStremioTitle } = require('../utils/streamFilters');
+const { encodeStreamToken } = require('../utils/streamToken');
 
 /**
  * Collect values from multiple sources using extractors
@@ -27,6 +38,102 @@ function collectValues(metaSources, ...extractors) {
     }
   }
   return collected;
+}
+
+/**
+ * Check if external special provider is configured
+ * @returns {boolean} True if configured
+ */
+function ensureSpecialProviderConfigured() {
+  return Boolean(EXTERNAL_SPECIAL_PROVIDER_URL);
+}
+
+/**
+ * Clean title for special provider searches
+ * @param {string} rawTitle - Raw title string
+ * @returns {string} Cleaned title
+ */
+function cleanSpecialSearchTitle(rawTitle) {
+  if (!rawTitle || typeof rawTitle !== 'string') return '';
+
+  let cleaned = rawTitle;
+
+  // Remove XXX tags
+  cleaned = cleaned.replace(/\bXXX\b/gi, '');
+
+  // Remove codec info (x264, x265, H264, H265, HEVC)
+  cleaned = cleaned.replace(/\b(x|h)\.?26[45]\b/gi, '');
+  cleaned = cleaned.replace(/\bHEVC\b/gi, '');
+
+  // Remove quality markers (1080p, 720p, 4K, 2160p)
+  cleaned = cleaned.replace(/\b(1080p|720p|480p|4K|2160p|UHD)\b/gi, '');
+
+  // Remove common delimiters
+  cleaned = cleaned.replace(/[._\-]+/g, ' ');
+
+  // Remove year in brackets [2023]
+  cleaned = cleaned.replace(/\[\d{4}\]/g, '');
+
+  // Remove extra spaces
+  cleaned = cleaned.replace(/\s+/g, ' ').trim();
+
+  return cleaned;
+}
+
+/**
+ * Fetch metadata from external special provider
+ * @param {string} identifier - Full identifier (prefix:id)
+ * @returns {Promise<object|null>} Metadata object with title/name or null
+ */
+async function fetchSpecialMetadata(identifier) {
+  if (!ensureSpecialProviderConfigured()) {
+    console.warn('[SPECIAL META] External provider not configured');
+    return null;
+  }
+
+  if (!identifier || typeof identifier !== 'string') {
+    return null;
+  }
+
+  // Extract provider ID from identifier (format: prefix:id)
+  const parts = identifier.split(':');
+  if (parts.length < 2) {
+    return null;
+  }
+
+  const prefix = parts[0];
+  const providerId = parts.slice(1).join(':');
+
+  if (!providerId) {
+    console.warn(`[SPECIAL META] Invalid identifier format: ${identifier}`);
+    return null;
+  }
+
+  try {
+    // Determine type based on prefix
+    const type = 'movie'; // Special catalogs are typically movie-type content
+    const metaUrl = `${EXTERNAL_SPECIAL_PROVIDER_URL}/meta/${type}/${identifier}.json`;
+
+    console.log(`[SPECIAL META] Fetching metadata from ${metaUrl}`);
+    const response = await axios.get(metaUrl, { timeout: 10000 });
+
+    const meta = response.data?.meta;
+    if (!meta) {
+      console.warn(`[SPECIAL META] No metadata returned for ${identifier}`);
+      return null;
+    }
+
+    const title = meta?.title || meta?.name || null;
+    if (title) {
+      console.log(`[SPECIAL META] Retrieved title: ${title}`);
+      return { title, name: title };
+    }
+
+    return null;
+  } catch (error) {
+    console.warn(`[SPECIAL META] Failed to fetch metadata for ${identifier}: ${error.message}`);
+    return null;
+  }
 }
 
 /**
@@ -57,8 +164,62 @@ async function handleStreamRequest(args) {
   console.log(`[CONFIG] Raw config from SDK:`, config);
   console.log(`[CONFIG] User preferences:`, { preferredLanguage, sortMethod, qualityFilter, maxResults, selectedIndexers, selectedCategories });
 
+  // Parse baseIdentifier (handles TVDB and special catalog IDs)
+  let baseIdentifier = id;
+  if (type === 'series' && typeof id === 'string') {
+    const parts = id.split(':');
+    if (parts.length >= 3) {
+      const potentialEpisode = Number.parseInt(parts[parts.length - 1], 10);
+      const potentialSeason = Number.parseInt(parts[parts.length - 2], 10);
+      if (Number.isFinite(potentialSeason) && Number.isFinite(potentialEpisode)) {
+        baseIdentifier = parts.slice(0, parts.length - 2).join(':');
+      }
+    }
+  }
+
+  let incomingImdbId = null;
+  let incomingTvdbId = null;
+  let incomingSpecialId = null;
+
+  // Check for IMDb ID
+  if (/^tt\d+$/i.test(baseIdentifier)) {
+    incomingImdbId = baseIdentifier.startsWith('tt') ? baseIdentifier : `tt${baseIdentifier}`;
+    baseIdentifier = incomingImdbId;
+  }
+
+  // Check for TVDB ID
+  const tvdbMatch = baseIdentifier.match(/^tvdb:([0-9]+)(?::.*)?$/i);
+  if (tvdbMatch) {
+    incomingTvdbId = tvdbMatch[1];
+    baseIdentifier = `tvdb:${incomingTvdbId}`;
+  }
+
+  // Check for special catalog IDs
+  const lowerIdentifier = baseIdentifier.toLowerCase();
+  for (const prefix of specialCatalogPrefixes) {
+    const normalizedPrefix = prefix.toLowerCase();
+    if (lowerIdentifier.startsWith(`${normalizedPrefix}:`)) {
+      const remainder = baseIdentifier.slice(prefix.length + 1);
+      if (remainder) {
+        incomingSpecialId = remainder;
+        baseIdentifier = `${prefix}:${remainder}`;
+      }
+      break;
+    }
+  }
+
+  const isSpecialRequest = Boolean(incomingSpecialId);
+
+  console.log('[REQUEST] Parsed identifiers:', {
+    baseIdentifier,
+    incomingImdbId,
+    incomingTvdbId,
+    incomingSpecialId,
+    isSpecialRequest
+  });
+
   const primaryId = id.split(':')[0];
-  if (!isValidImdbId(id)) {
+  if (!incomingTvdbId && !isSpecialRequest && !isValidImdbId(id)) {
     throw new Error(`Unsupported ID prefix for Prowlarr ID search: ${primaryId}`);
   }
 
@@ -98,13 +259,29 @@ async function handleStreamRequest(args) {
   );
 
   const metaSources = [meta];
+
+  // Add TVDB to metaSources if present
+  if (incomingTvdbId) {
+    metaSources.push({ ids: { tvdb: incomingTvdbId }, tvdb_id: incomingTvdbId });
+  }
+
   let cinemetaMeta = null;
 
-  const needsCinemeta = (!hasTitleInQuery) || (type === 'series' && !hasTvdbInQuery) || (type === 'movie' && !hasTmdbInQuery);
+  // Skip Cinemeta for TVDB and special catalogs
+  const needsCinemeta = !incomingTvdbId && !isSpecialRequest && ((!hasTitleInQuery) || (type === 'series' && !hasTvdbInQuery) || (type === 'movie' && !hasTmdbInQuery));
   if (needsCinemeta) {
     cinemetaMeta = await fetchCinemetaMetadata(type, primaryId);
     if (cinemetaMeta) {
       metaSources.push(cinemetaMeta);
+    }
+  }
+
+  // Fetch external metadata for special requests
+  if (isSpecialRequest) {
+    const specialMetadata = await fetchSpecialMetadata(baseIdentifier);
+    if (specialMetadata?.title) {
+      metaSources.push({ title: specialMetadata.title, name: specialMetadata.title });
+      console.log(`[SPECIAL META] Using external metadata: ${specialMetadata.title}`);
     }
   }
 
@@ -159,7 +336,8 @@ async function handleStreamRequest(args) {
           (src) => src?.externals?.tvdb,
           (src) => src?.tvdbSlug,
           (src) => src?.tvdbid
-        )
+        ),
+        incomingTvdbId
       )
     )
   };
@@ -190,8 +368,21 @@ async function handleStreamRequest(args) {
 
   console.log('[REQUEST] Resolved title/year', { movieTitle, releaseYear });
 
-  // Search Prowlarr
-  const finalNzbResults = await searchProwlarr({
+  // Fetch NZBDav history for instant playback
+  const categoryForType = getNzbdavCategory(type);
+  let historyByTitle = new Map();
+
+  try {
+    historyByTitle = await fetchCompletedNzbdavHistory([categoryForType]);
+    if (historyByTitle.size > 0) {
+      console.log(`[NZBDAV] Loaded ${historyByTitle.size} completed NZBs for instant playback`);
+    }
+  } catch (historyError) {
+    console.warn(`[NZBDAV] Unable to load NZBDav history: ${historyError.message}`);
+  }
+
+  // Search indexer manager (Prowlarr or NZBHydra)
+  const finalNzbResults = await searchIndexer({
     metaIds,
     type,
     movieTitle,
@@ -232,24 +423,51 @@ async function handleStreamRequest(args) {
       // Get parsed data from result (added by filterAndSortStreams)
       const parsed = result.parsed || {};
 
-      // Create stream URL with parameters
-      const baseParams = new URLSearchParams({
+      // Normalize title for history lookup
+      const normalizedTitle = normalizeReleaseTitle(result.title);
+      const historySlot = normalizedTitle ? historyByTitle.get(normalizedTitle) : null;
+
+      // Create stream parameters object
+      const streamParams = {
         indexerId: String(result.indexerId),
         type,
-        id
-      });
+        id,
+        downloadUrl: result.downloadUrl,
+        // Add clean content title for external players
+        contentTitle: movieTitle || result.title,
+        contentYear: releaseYear
+      };
 
-      baseParams.set('downloadUrl', result.downloadUrl);
-      if (result.guid) baseParams.set('guid', result.guid);
-      if (result.size) baseParams.set('size', String(result.size));
-      if (result.title) baseParams.set('title', result.title);
+      if (result.guid) streamParams.guid = result.guid;
+      if (result.size) streamParams.size = String(result.size);
+      if (result.title) streamParams.title = result.title;
 
-      const streamUrl = `${addonBaseUrl}/nzb/stream?${baseParams.toString()}`;
+      // Add history params if found
+      if (historySlot?.nzoId) {
+        streamParams.historyNzoId = historySlot.nzoId;
+        if (historySlot.jobName) streamParams.historyJobName = historySlot.jobName;
+        if (historySlot.category) streamParams.historyCategory = historySlot.category;
+      }
+
+      // Encode parameters into a token for external player compatibility
+      const token = encodeStreamToken(streamParams);
+      const streamUrl = `${addonBaseUrl}/nzb/stream/${token}`;
       const name = 'UsenetStreamer';
       const behaviorHints = {
         notWebReady: true,
         bingeGroup: 'usenetstreamer'
       };
+
+      // Check if this is an instant stream (cached or in history)
+      const cacheEntry = null; // This would need to be implemented if you have a cache
+      const isInstant = cacheEntry?.status === 'ready' || Boolean(historySlot);
+
+      if (isInstant) {
+        behaviorHints.cached = true;
+        if (historySlot) {
+          behaviorHints.cachedFromHistory = true;
+        }
+      }
 
       // Format clean 3-line title using parser data
       // Line 1: 🎬 {Resolution} • {Audio Codec} {Atmos} {Channels}
@@ -257,8 +475,22 @@ async function handleStreamRequest(args) {
       // Line 3: 💾 {Size} • 📡 {Indexer}
       const { line1, line2, line3 } = formatStremioTitle(parsed, result.size, result.indexer);
 
+      // Build tags array
+      const tags = [];
+
+      // Add instant badge FIRST if applicable
+      if (isInstant) {
+        tags.unshift('⚡ Instant');
+      }
+
       // Combine lines with newlines, omit empty lines
       const titleLines = [line1, line2, line3].filter(line => line && line.trim());
+
+      // Add tags if any
+      if (tags.length > 0) {
+        titleLines.push(tags.join(' • '));
+      }
+
       const formattedTitle = titleLines.join('\n');
 
       return {
@@ -335,5 +567,8 @@ async function handleStreamRequest(args) {
 }
 
 module.exports = {
-  handleStreamRequest
+  handleStreamRequest,
+  ensureSpecialProviderConfigured,
+  cleanSpecialSearchTitle,
+  fetchSpecialMetadata
 };

@@ -20,6 +20,7 @@ const {
   NZBDAV_STREAM_TIMEOUT_MS,
   NZBDAV_MAX_DIRECTORY_DEPTH,
   NZBDAV_SUPPORTED_METHODS,
+  NZBDAV_HISTORY_FETCH_LIMIT,
   STREAM_HIGH_WATER_MARK,
   FAILURE_VIDEO_FILENAME
 } = require('../config/environment');
@@ -30,6 +31,107 @@ const pipelineAsync = promisify(pipeline);
 const FAILURE_VIDEO_PATH = path.resolve(__dirname, '..', '..', 'assets', FAILURE_VIDEO_FILENAME);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Normalize release title for matching
+ * @param {string} title - Release title
+ * @returns {string} Normalized title
+ */
+function normalizeReleaseTitle(title) {
+  if (!title) return '';
+  return title.toString().trim().toLowerCase();
+}
+
+/**
+ * Fetch completed NZBs from NZBDav history
+ * @param {Array<string>} categories - Categories to fetch
+ * @returns {Promise<Map>} Map of normalized title -> { nzoId, jobName, category, size, slot }
+ */
+async function fetchCompletedNzbdavHistory(categories = []) {
+  ensureNzbdavConfigured();
+  const categoryList = Array.isArray(categories) && categories.length > 0
+    ? Array.from(new Set(categories.filter((value) => value !== undefined && value !== null && String(value).trim() !== '')))
+    : [null];
+
+  const results = new Map();
+
+  for (const category of categoryList) {
+    try {
+      const params = buildNzbdavApiParams('history', {
+        start: '0',
+        limit: String(NZBDAV_HISTORY_FETCH_LIMIT),
+        category: category || undefined
+      });
+
+      const headers = {};
+      if (NZBDAV_API_KEY) {
+        headers['x-api-key'] = NZBDAV_API_KEY;
+      }
+
+      const response = await axios.get(`${NZBDAV_URL}/api`, {
+        params,
+        timeout: NZBDAV_HISTORY_TIMEOUT_MS,
+        headers,
+        validateStatus: (status) => status < 500
+      });
+
+      if (!response.data?.status) {
+        const errorMessage = response.data?.error || `history returned status ${response.status}`;
+        throw new Error(errorMessage);
+      }
+
+      const history = response.data?.history || response.data?.History;
+      const slots = history?.slots || history?.Slots || [];
+
+      for (const slot of slots) {
+        const status = (slot?.status || slot?.Status || '').toString().toLowerCase();
+        if (status !== 'completed') {
+          continue;
+        }
+
+        const jobName = slot?.job_name || slot?.JobName || slot?.name || slot?.Name || slot?.nzb_name || slot?.NzbName;
+        const nzoId = slot?.nzo_id || slot?.nzoId || slot?.NzoId;
+        if (!jobName || !nzoId) {
+          continue;
+        }
+
+        const normalized = normalizeReleaseTitle(jobName);
+        if (!normalized) {
+          continue;
+        }
+
+        if (!results.has(normalized)) {
+          results.set(normalized, {
+            nzoId,
+            jobName,
+            category: slot?.category || slot?.Category || category || null,
+            size: slot?.size || slot?.Size || null,
+            slot
+          });
+        }
+      }
+    } catch (error) {
+      console.warn(`[NZBDAV] Failed to fetch history for category ${category || 'all'}: ${error.message}`);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Build NZBDav cache key
+ * @param {string} downloadUrl - NZB download URL
+ * @param {string} category - NZBDav category
+ * @param {object} requestedEpisode - Requested episode info
+ * @returns {string} Cache key
+ */
+function buildNzbdavCacheKey(downloadUrl, category, requestedEpisode = null) {
+  const keyParts = [downloadUrl, category];
+  if (requestedEpisode && Number.isFinite(requestedEpisode.season) && Number.isFinite(requestedEpisode.episode)) {
+    keyParts.push(`${requestedEpisode.season}x${requestedEpisode.episode}`);
+  }
+  return keyParts.join('|');
+}
 
 /**
  * Get NZBDav category for content type
@@ -311,47 +413,92 @@ async function findBestVideoFile({ category, jobName, requestedEpisode }) {
  * @param {string} params.category - NZBDav category
  * @param {string} params.title - Content title
  * @param {object} params.requestedEpisode - Requested episode info
+ * @param {object} params.existingSlot - Existing slot for reuse (optional)
  * @returns {Promise<object>} Stream data
  */
-async function buildNzbdavStream({ downloadUrl, category, title, requestedEpisode }) {
-  try {
-    const { nzoId } = await addNzbToNzbdav(downloadUrl, category, title);
-    const slot = await waitForNzbdavHistorySlot(nzoId, category);
-    const slotCategory = slot?.category || slot?.Category || category;
-    const slotJobName = slot?.job_name || slot?.JobName || slot?.name || slot?.Name;
-
-    if (!slotJobName) {
-      throw new Error('[NZBDAV] Unable to determine job name from history');
-    }
-
-    const bestFile = await findBestVideoFile({
-      category: slotCategory,
-      jobName: slotJobName,
-      requestedEpisode
-    });
-
-    if (!bestFile) {
-      throw new Error('[NZBDAV] No playable video files found after mounting NZB');
-    }
-
-    console.log(`[NZBDAV] Selected file ${bestFile.viewPath} (${bestFile.size} bytes)`);
-
-    return {
-      nzoId,
-      category: slotCategory,
-      jobName: slotJobName,
-      viewPath: bestFile.viewPath,
-      size: bestFile.size,
-      fileName: bestFile.name
-    };
-  } catch (error) {
-    if (error?.isNzbdavFailure) {
-      error.downloadUrl = downloadUrl;
-      error.category = category;
-      error.title = title;
-    }
-    throw error;
+async function buildNzbdavStream({ downloadUrl, category, title, requestedEpisode, existingSlot = null }) {
+  let reuseError = null;
+  const attempts = [];
+  if (existingSlot?.nzoId) {
+    attempts.push('reuse');
   }
+  attempts.push('queue');
+
+  for (const mode of attempts) {
+    try {
+      let slot = null;
+      let nzoId = null;
+      let slotCategory = category;
+      let slotJobName = title;
+
+      if (mode === 'reuse') {
+        const reuseCategory = existingSlot?.category || category;
+        slot = await waitForNzbdavHistorySlot(existingSlot.nzoId, reuseCategory);
+        nzoId = existingSlot.nzoId;
+        slotCategory = slot?.category || slot?.Category || reuseCategory;
+        slotJobName = slot?.job_name || slot?.JobName || slot?.name || slot?.Name || existingSlot?.jobName || title;
+        console.log(`[NZBDAV] Reusing completed NZB ${slotJobName} (${nzoId})`);
+      } else {
+        const added = await addNzbToNzbdav(downloadUrl, category, title);
+        nzoId = added.nzoId;
+        slot = await waitForNzbdavHistorySlot(nzoId, category);
+        slotCategory = slot?.category || slot?.Category || category;
+        slotJobName = slot?.job_name || slot?.JobName || slot?.name || slot?.Name || title;
+      }
+
+      if (!slotJobName) {
+        throw new Error('[NZBDAV] Unable to determine job name from history');
+      }
+
+      const bestFile = await findBestVideoFile({
+        category: slotCategory,
+        jobName: slotJobName,
+        requestedEpisode
+      });
+
+      if (!bestFile) {
+        throw new Error('[NZBDAV] No playable video files found after mounting NZB');
+      }
+
+      console.log(`[NZBDAV] Selected file ${bestFile.viewPath} (${bestFile.size} bytes)`);
+
+      return {
+        nzoId,
+        category: slotCategory,
+        jobName: slotJobName,
+        viewPath: bestFile.viewPath,
+        size: bestFile.size,
+        fileName: bestFile.name
+      };
+    } catch (error) {
+      if (mode === 'reuse') {
+        reuseError = error;
+        console.warn(`[NZBDAV] Reuse attempt failed for NZB ${existingSlot?.nzoId || 'unknown'}: ${error.message}`);
+        continue;
+      }
+      if (error?.isNzbdavFailure) {
+        error.downloadUrl = downloadUrl;
+        error.category = category;
+        error.title = title;
+      }
+      throw error;
+    }
+  }
+
+  if (reuseError) {
+    if (reuseError?.isNzbdavFailure) {
+      reuseError.downloadUrl = downloadUrl;
+      reuseError.category = category;
+      reuseError.title = title;
+    }
+    throw reuseError;
+  }
+
+  const fallbackError = new Error('[NZBDAV] Unable to prepare NZB stream');
+  fallbackError.downloadUrl = downloadUrl;
+  fallbackError.category = category;
+  fallbackError.title = title;
+  throw fallbackError;
 }
 
 /**
@@ -493,13 +640,43 @@ async function streamFailureVideo(req, res, failureError) {
 }
 
 /**
+ * Map of video file extensions to MIME types
+ */
+const VIDEO_MIME_MAP = new Map([
+  ['.mp4', 'video/mp4'],
+  ['.m4v', 'video/mp4'],
+  ['.mkv', 'video/x-matroska'],
+  ['.webm', 'video/webm'],
+  ['.avi', 'video/x-msvideo'],
+  ['.mov', 'video/quicktime'],
+  ['.wmv', 'video/x-ms-wmv'],
+  ['.flv', 'video/x-flv'],
+  ['.ts', 'video/mp2t'],
+  ['.m2ts', 'video/mp2t'],
+  ['.mpg', 'video/mpeg'],
+  ['.mpeg', 'video/mpeg']
+]);
+
+/**
+ * Infer MIME type from file name
+ * @param {string} fileName - File name with extension
+ * @returns {string} MIME type
+ */
+function inferMimeType(fileName) {
+  if (!fileName) return 'application/octet-stream';
+  const ext = path.posix.extname(fileName.toLowerCase());
+  return VIDEO_MIME_MAP.get(ext) || 'application/octet-stream';
+}
+
+/**
  * Proxy NZBDav stream through WebDAV
  * @param {object} req - Express request
  * @param {object} res - Express response
  * @param {string} viewPath - WebDAV path
  * @param {string} fileNameHint - File name hint
+ * @param {object} streamData - Stream data (optional, contains size info)
  */
-async function proxyNzbdavStream(req, res, viewPath, fileNameHint = '') {
+async function proxyNzbdavStream(req, res, viewPath, fileNameHint = '', streamData = null) {
   const originalMethod = (req.method || 'GET').toUpperCase();
   if (!NZBDAV_SUPPORTED_METHODS.has(originalMethod)) {
     res.status(405).send('Method Not Allowed');
@@ -519,6 +696,8 @@ async function proxyNzbdavStream(req, res, viewPath, fileNameHint = '') {
   const headers = {};
 
   console.log(`[NZBDAV] Streaming ${normalizedPath} via WebDAV`);
+  console.log(`[NZBDAV] Target URL: ${targetUrl}`);
+  console.log(`[NZBDAV] Original method: ${originalMethod}, Proxied method: ${proxiedMethod}, Emulate HEAD: ${emulateHead}`);
 
   const coerceToString = (value) => {
     if (Array.isArray(value)) {
@@ -548,14 +727,57 @@ async function proxyNzbdavStream(req, res, viewPath, fileNameHint = '') {
 
   const sanitizedFileName = derivedFileName.replace(/[\\/:*?"<>|]+/g, '_') || 'stream';
 
+  // Set up request headers with hardening
   if (req.headers.range) headers.Range = req.headers.range;
   if (req.headers['if-range']) headers['If-Range'] = req.headers['if-range'];
   if (req.headers.accept) headers.Accept = req.headers.accept;
   if (req.headers['accept-language']) headers['Accept-Language'] = req.headers['accept-language'];
   if (req.headers['accept-encoding']) headers['Accept-Encoding'] = req.headers['accept-encoding'];
   if (req.headers['user-agent']) headers['User-Agent'] = req.headers['user-agent'];
+
+  // Ensure Accept-Encoding is set (default to 'identity' if missing)
+  if (!headers['Accept-Encoding']) {
+    headers['Accept-Encoding'] = 'identity';
+  }
+
   if (emulateHead && !headers.Range) {
     headers.Range = 'bytes=0-0';
+  }
+
+  // Perform HEAD request to get total file size if not doing range request and not HEAD
+  let totalFileSize = null;
+  if (!req.headers.range && !emulateHead) {
+    const headConfig = {
+      url: targetUrl,
+      method: 'HEAD',
+      headers: {
+        'User-Agent': headers['User-Agent'] || 'UsenetStreamer'
+      },
+      timeout: 30000,
+      validateStatus: (status) => status < 500
+    };
+
+    if (NZBDAV_WEBDAV_USER && NZBDAV_WEBDAV_PASS) {
+      headConfig.auth = {
+        username: NZBDAV_WEBDAV_USER,
+        password: NZBDAV_WEBDAV_PASS
+      };
+    }
+
+    try {
+      const headResponse = await axios.request(headConfig);
+      const headHeadersLower = Object.keys(headResponse.headers || {}).reduce((map, key) => {
+        map[key.toLowerCase()] = headResponse.headers[key];
+        return map;
+      }, {});
+      const headContentLength = headHeadersLower['content-length'];
+      if (headContentLength) {
+        totalFileSize = Number(headContentLength);
+        console.log(`[NZBDAV] HEAD reported total size ${totalFileSize} bytes for ${normalizedPath}`);
+      }
+    } catch (headError) {
+      console.warn('[NZBDAV] HEAD request failed; continuing without pre-fetched size:', headError.message);
+    }
   }
 
   const requestConfig = {
@@ -578,21 +800,129 @@ async function proxyNzbdavStream(req, res, viewPath, fileNameHint = '') {
 
   const nzbdavResponse = await axios.request(requestConfig);
 
-  res.status(nzbdavResponse.status);
+  // Fix range request status codes: if response has Content-Range but status is 200, change to 206
+  // Exception: HEAD emulation should always return 200
+  let responseStatus = nzbdavResponse.status;
+  const responseHeadersLower = Object.keys(nzbdavResponse.headers || {}).reduce((map, key) => {
+    map[key.toLowerCase()] = nzbdavResponse.headers[key];
+    return map;
+  }, {});
 
+  const incomingContentRange = responseHeadersLower['content-range'];
+  if (incomingContentRange && responseStatus === 200 && !emulateHead) {
+    responseStatus = 206;
+  }
+
+  // HEAD requests should always return 200, not 206
+  if (emulateHead) {
+    responseStatus = 200;
+  }
+
+  res.status(responseStatus);
+
+  // Header blocklist - block sensitive headers from being proxied
+  const headerBlocklist = new Set([
+    'transfer-encoding',
+    'www-authenticate',
+    'set-cookie',
+    'cookie',
+    'authorization'
+  ]);
+
+  // Proxy headers with blocklist filtering
   Object.entries(nzbdavResponse.headers || {}).forEach(([key, value]) => {
-    if (key.toLowerCase() === 'transfer-encoding') {
+    const lowerKey = key.toLowerCase();
+    if (headerBlocklist.has(lowerKey)) {
       return;
     }
-    res.setHeader(key, value);
+    if (value !== undefined) {
+      res.setHeader(key, value);
+    }
   });
 
+  // Set Content-Disposition if not already set
   const incomingDisposition = nzbdavResponse.headers?.['content-disposition'];
   const hasFilenameInDisposition = typeof incomingDisposition === 'string' && /filename=/i.test(incomingDisposition);
   if (!hasFilenameInDisposition) {
     res.setHeader('Content-Disposition', `inline; filename="${sanitizedFileName}"`);
   }
 
+  // MIME type inference - set Content-Type if missing or generic
+  const inferredMime = inferMimeType(sanitizedFileName);
+  if (!res.getHeader('Content-Type') || res.getHeader('Content-Type') === 'application/octet-stream') {
+    res.setHeader('Content-Type', inferredMime);
+  }
+
+  // Ensure Accept-Ranges header is set
+  const acceptRangesHeader = res.getHeader('Accept-Ranges');
+  if (!acceptRangesHeader) {
+    res.setHeader('Accept-Ranges', 'bytes');
+  }
+
+  // Content-Length recalculation for range requests
+  const contentLengthHeader = res.getHeader('Content-Length');
+  if (incomingContentRange) {
+    // Parse Content-Range header (format: "bytes start-end/total")
+    const match = incomingContentRange.match(/bytes\s+(\d+)-(\d+)\s*\/\s*(\d+|\*)/i);
+    if (match) {
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      const totalSize = match[3] !== '*' ? Number(match[3]) : null;
+
+      // For HEAD emulation: use total size, not chunk length
+      if (emulateHead) {
+        if (Number.isFinite(totalSize)) {
+          res.setHeader('Content-Length', String(totalSize));
+          res.setHeader('X-Total-Length', String(totalSize));
+          console.log(`[NZBDAV] ✅ HEAD emulation: Set Content-Length: ${totalSize} (total file size)`);
+        }
+      } else {
+        // Calculate actual chunk length from range (end - start + 1)
+        const chunkLength = Number.isFinite(start) && Number.isFinite(end) ? end - start + 1 : null;
+
+        console.log('[NZBDAV] Calculated chunk length:', { start, end, chunkLength, totalSize });
+
+        if (Number.isFinite(chunkLength) && chunkLength > 0) {
+          // Set Content-Length to chunk length (not total size)
+          res.setHeader('Content-Length', String(chunkLength));
+          console.log(`[NZBDAV] ✅ Set Content-Length: ${chunkLength} (from Content-Range: bytes ${start}-${end}/${totalSize || '*'})`);
+        } else {
+          console.error('[NZBDAV] ❌ Failed to calculate valid chunk length!');
+        }
+
+        // Optionally set X-Total-Length to total file size
+        if (Number.isFinite(totalSize)) {
+          res.setHeader('X-Total-Length', String(totalSize));
+        }
+      }
+    } else {
+      console.error('[NZBDAV] ❌ Failed to parse Content-Range header!');
+    }
+  } else if ((!contentLengthHeader || Number(contentLengthHeader) === 0) && Number.isFinite(totalFileSize)) {
+    res.setHeader('Content-Length', String(totalFileSize));
+    console.log(`[NZBDAV] Set Content-Length: ${totalFileSize} (from HEAD request)`);
+  } else if ((!contentLengthHeader || Number(contentLengthHeader) === 0) && streamData && Number.isFinite(streamData.size)) {
+    res.setHeader('Content-Length', String(streamData.size));
+    console.log(`[NZBDAV] Set Content-Length: ${streamData.size} (from streamData fallback)`);
+  } else if (!contentLengthHeader || Number(contentLengthHeader) === 0) {
+    console.warn('[NZBDAV] Warning: No Content-Length or Content-Range header available');
+  }
+
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Length,Content-Range,Content-Type,Accept-Ranges');
+
+  // Debug: Log final response headers for external player troubleshooting
+  console.log('[NZBDAV] Final response headers:', {
+    'status': responseStatus,
+    'content-type': res.getHeader('Content-Type'),
+    'content-length': res.getHeader('Content-Length'),
+    'content-range': res.getHeader('Content-Range'),
+    'accept-ranges': res.getHeader('Accept-Ranges'),
+    'x-total-length': res.getHeader('X-Total-Length')
+  });
+
+  // Handle HEAD requests or non-streamable responses
   if (emulateHead || !nzbdavResponse.data || typeof nzbdavResponse.data.pipe !== 'function') {
     if (nzbdavResponse.data && typeof nzbdavResponse.data.destroy === 'function') {
       nzbdavResponse.data.destroy();
@@ -614,6 +944,9 @@ async function proxyNzbdavStream(req, res, viewPath, fileNameHint = '') {
 }
 
 module.exports = {
+  normalizeReleaseTitle,
+  fetchCompletedNzbdavHistory,
+  buildNzbdavCacheKey,
   getNzbdavCategory,
   buildNzbdavStream,
   proxyNzbdavStream,

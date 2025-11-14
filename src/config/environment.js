@@ -1,9 +1,53 @@
 require('dotenv').config();
 
-// Prowlarr Configuration
-const PROWLARR_URL = (process.env.PROWLARR_URL || '').trim();
-const PROWLARR_API_KEY = (process.env.PROWLARR_API_KEY || '').trim();
-const PROWLARR_STRICT_ID_MATCH = (process.env.PROWLARR_STRICT_ID_MATCH || 'false').toLowerCase() === 'true';
+// Helper functions for parsing environment variables
+function toFiniteNumber(value, defaultValue = undefined) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : defaultValue;
+}
+
+function toPositiveInt(value, defaultValue) {
+  const num = toFiniteNumber(value, defaultValue);
+  return Number.isFinite(num) && num > 0 ? Math.floor(num) : defaultValue;
+}
+
+function toBoolean(value, defaultValue = false) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return defaultValue;
+  const lower = value.trim().toLowerCase();
+  if (lower === 'true' || lower === '1') return true;
+  if (lower === 'false' || lower === '0') return false;
+  return defaultValue;
+}
+
+function decodeBase64Value(value) {
+  try {
+    return Buffer.from(value, 'base64').toString('utf-8');
+  } catch {
+    return '';
+  }
+}
+
+function stripTrailingSlashes(value) {
+  return value.replace(/\/+$/, '');
+}
+
+// Indexer Manager Configuration (Prowlarr or NZBHydra)
+const INDEXER_MANAGER = (process.env.INDEXER_MANAGER || 'prowlarr').trim().toLowerCase();
+const INDEXER_MANAGER_URL = (process.env.INDEXER_MANAGER_URL || process.env.PROWLARR_URL || '').trim();
+const INDEXER_MANAGER_API_KEY = (process.env.INDEXER_MANAGER_API_KEY || process.env.PROWLARR_API_KEY || '').trim();
+const INDEXER_MANAGER_STRICT_ID_MATCH = toBoolean(
+  process.env.INDEXER_MANAGER_STRICT_ID_MATCH || process.env.PROWLARR_STRICT_ID_MATCH,
+  false
+);
+const INDEXER_MANAGER_LABEL = INDEXER_MANAGER === 'nzbhydra' ? 'NZBHydra' : 'Prowlarr';
+const INDEXER_MANAGER_CACHE_MINUTES = toPositiveInt(process.env.INDEXER_MANAGER_CACHE_MINUTES, 10);
+const INDEXER_MANAGER_BASE_URL = stripTrailingSlashes(INDEXER_MANAGER_URL);
+
+// Legacy Prowlarr exports (for backward compatibility)
+const PROWLARR_URL = INDEXER_MANAGER_URL;
+const PROWLARR_API_KEY = INDEXER_MANAGER_API_KEY;
+const PROWLARR_STRICT_ID_MATCH = INDEXER_MANAGER_STRICT_ID_MATCH;
 
 // Addon Configuration
 const ADDON_BASE_URL = (process.env.ADDON_BASE_URL || '').trim();
@@ -24,7 +68,17 @@ const NZBDAV_WEBDAV_ROOT = '/';
 // NZBDav Timeouts and Limits
 const NZBDAV_POLL_INTERVAL_MS = 2000;
 const NZBDAV_POLL_TIMEOUT_MS = 80000;
-const NZBDAV_CACHE_TTL_MS = 3600000;
+const NZBDAV_CACHE_TTL_MINUTES = (() => {
+  const raw = toFiniteNumber(process.env.NZBDAV_CACHE_TTL_MINUTES);
+  if (Number.isFinite(raw) && raw > 0) return raw;
+  if (raw === 0) return 0;
+  return 1440; // default 24 hours
+})();
+const NZBDAV_CACHE_TTL_MS = NZBDAV_CACHE_TTL_MINUTES > 0 ? NZBDAV_CACHE_TTL_MINUTES * 60 * 1000 : 0;
+const NZBDAV_HISTORY_FETCH_LIMIT = (() => {
+  const raw = toFiniteNumber(process.env.NZBDAV_HISTORY_FETCH_LIMIT);
+  return Number.isFinite(raw) && raw > 0 ? Math.min(raw, 500) : 400;
+})();
 const NZBDAV_MAX_DIRECTORY_DEPTH = 6;
 const NZBDAV_API_TIMEOUT_MS = 80000;
 const NZBDAV_HISTORY_TIMEOUT_MS = 60000;
@@ -33,7 +87,19 @@ const NZBDAV_STREAM_TIMEOUT_MS = 240000;
 // Stream Configuration
 const STREAM_HIGH_WATER_MARK = (() => {
   const parsed = Number(process.env.STREAM_HIGH_WATER_MARK);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1024 * 1024;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 4 * 1024 * 1024;
+})();
+
+// External Metadata Provider Support
+const OBFUSCATED_SPECIAL_PROVIDER_URL = 'aHR0cHM6Ly9kaXJ0eS1waW5rLmVycy5wdw==';
+const OBFUSCATED_SPECIAL_ID_PREFIX = 'cG9ybmRi';
+const SPECIAL_ID_PREFIX = decodeBase64Value(OBFUSCATED_SPECIAL_ID_PREFIX) || 'porndb';
+const specialCatalogPrefixes = new Set(['pt', SPECIAL_ID_PREFIX]);
+const EXTERNAL_SPECIAL_PROVIDER_URL = (() => {
+  const envUrl = (process.env.EXTERNAL_SPECIAL_ADDON_URL || process.env.EXTERNAL_ADDON_URL || '').trim();
+  if (envUrl) return stripTrailingSlashes(envUrl);
+  const decoded = decodeBase64Value(OBFUSCATED_SPECIAL_PROVIDER_URL);
+  return decoded ? stripTrailingSlashes(decoded) : '';
 })();
 
 // External Services
@@ -51,7 +117,21 @@ const NZBDAV_VIDEO_EXTENSIONS = new Set([
 const NZBDAV_SUPPORTED_METHODS = new Set(['GET', 'HEAD']);
 
 module.exports = {
-  // Prowlarr
+  // Helper functions
+  toFiniteNumber,
+  toPositiveInt,
+  toBoolean,
+
+  // Indexer Manager
+  INDEXER_MANAGER,
+  INDEXER_MANAGER_URL,
+  INDEXER_MANAGER_API_KEY,
+  INDEXER_MANAGER_STRICT_ID_MATCH,
+  INDEXER_MANAGER_LABEL,
+  INDEXER_MANAGER_CACHE_MINUTES,
+  INDEXER_MANAGER_BASE_URL,
+
+  // Prowlarr (legacy, for backward compatibility)
   PROWLARR_URL,
   PROWLARR_API_KEY,
   PROWLARR_STRICT_ID_MATCH,
@@ -73,7 +153,9 @@ module.exports = {
   NZBDAV_WEBDAV_ROOT,
   NZBDAV_POLL_INTERVAL_MS,
   NZBDAV_POLL_TIMEOUT_MS,
+  NZBDAV_CACHE_TTL_MINUTES,
   NZBDAV_CACHE_TTL_MS,
+  NZBDAV_HISTORY_FETCH_LIMIT,
   NZBDAV_MAX_DIRECTORY_DEPTH,
   NZBDAV_API_TIMEOUT_MS,
   NZBDAV_HISTORY_TIMEOUT_MS,
@@ -83,6 +165,11 @@ module.exports = {
 
   // Stream
   STREAM_HIGH_WATER_MARK,
+
+  // External Metadata Provider
+  SPECIAL_ID_PREFIX,
+  specialCatalogPrefixes,
+  EXTERNAL_SPECIAL_PROVIDER_URL,
 
   // External Services
   CINEMETA_URL,
