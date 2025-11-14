@@ -472,8 +472,8 @@ async function handleStreamRequest(args) {
       // Format clean 3-line title using parser data
       // Line 1: 🎬 {Resolution} • {Audio Codec} {Atmos} {Channels}
       // Line 2: {Emoji} {HDR/DV} • {Source} • {Release Group}
-      // Line 3: 💾 {Size} • 📡 {Indexer}
-      const { line1, line2, line3 } = formatStremioTitle(parsed, result.size, result.indexer);
+      // Line 3: 💾 {Size} • 📡 {Indexer} • {Age}
+      const { line1, line2, line3 } = formatStremioTitle(parsed, result.size, result.indexer, result.age);
 
       // Build tags array
       const tags = [];

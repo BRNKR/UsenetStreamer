@@ -1,4 +1,5 @@
 const { filenameParse } = require('@ctrl/video-filename-parser');
+const { AGE_THRESHOLDS, SHOW_FILE_AGE } = require('../config/environment');
 
 /**
  * Parse release name using video-filename-parser
@@ -14,6 +15,113 @@ function parseRelease(title) {
     console.error(`[PARSE ERROR] Failed to parse: ${title}`, error.message);
     return {};
   }
+}
+
+/**
+ * Determine health status based on age and retention thresholds
+ * @param {number} age - Age in days
+ * @returns {object} Health status with icon, label, and warning message
+ */
+function getAgeHealthStatus(age) {
+  if (!AGE_THRESHOLDS || age === null || age === undefined) {
+    return null;
+  }
+
+  const { freshDays, agingDays, warningDays, filterDays } = AGE_THRESHOLDS;
+
+  // 🚫 Should be filtered out
+  if (age > filterDays) {
+    return {
+      status: 'filtered',
+      icon: '🚫',
+      label: 'Filtered',
+      warning: 'May be incomplete'
+    };
+  }
+
+  // ⚠️ Warning zone (95-97% retention)
+  if (age >= warningDays) {
+    return {
+      status: 'warning',
+      icon: '⚠️',
+      label: 'Warning',
+      warning: 'May be incomplete'
+    };
+  }
+
+  // ⏳ Aging zone (85-95% retention)
+  if (age >= agingDays) {
+    return {
+      status: 'aging',
+      icon: '⏳',
+      label: 'Aging',
+      warning: null
+    };
+  }
+
+  // 📅 Fresh (0-7 days)
+  if (age <= freshDays) {
+    return {
+      status: 'fresh',
+      icon: '📅',
+      label: 'Fresh',
+      warning: null
+    };
+  }
+
+  // 📄 Standard (8 days to 85% retention)
+  return {
+    status: 'standard',
+    icon: '📄',
+    label: 'Standard',
+    warning: null
+  };
+}
+
+/**
+ * Format age display with health indicator
+ * @param {number} age - Age in days
+ * @returns {string|null} Formatted age string or null if not showing age
+ */
+function formatAgeDisplay(age) {
+  if (!SHOW_FILE_AGE || age === null || age === undefined) {
+    return null;
+  }
+
+  const healthStatus = getAgeHealthStatus(age);
+
+  if (!healthStatus) {
+    // No thresholds configured, just show age
+    return `${age} days old`;
+  }
+
+  const { status, icon, warning } = healthStatus;
+  const ageText = `${age} days old`;
+
+  // Format based on status
+  if (status === 'fresh') {
+    return `${icon} New • ${ageText}`;
+  } else if (status === 'warning') {
+    return `${icon} ${ageText} • ${warning}`;
+  } else if (status === 'aging') {
+    return `${icon} ${ageText}`;
+  } else {
+    // Standard - no icon
+    return ageText;
+  }
+}
+
+/**
+ * Check if a stream should be filtered based on age
+ * @param {number} age - Age in days
+ * @returns {boolean} True if should be filtered out
+ */
+function shouldFilterByAge(age) {
+  if (!AGE_THRESHOLDS || age === null || age === undefined) {
+    return false;
+  }
+
+  return age > AGE_THRESHOLDS.filterDays;
 }
 
 /**
@@ -297,26 +405,49 @@ function filterAndSortStreams(results, sortMethod, preferredLanguage, qualityFil
 
   console.log(`[FILTER] Parsed ${parsedItems.length} releases`);
 
-  // Filter by quality
+  // Filter by age (retention-based filtering)
   let filteredItems = parsedItems;
-  let filteredCount = 0;
+  let ageFilteredCount = 0;
+
+  if (AGE_THRESHOLDS) {
+    console.log(`[AGE FILTER] Retention: ${AGE_THRESHOLDS.retentionDays} days, Filter threshold: ${AGE_THRESHOLDS.filterDays} days`);
+
+    filteredItems = parsedItems.filter(item => {
+      const age = item.result.age;
+      const shouldFilter = shouldFilterByAge(age);
+
+      if (shouldFilter) {
+        ageFilteredCount++;
+        console.log(`[AGE FILTER] 🚫 FILTERED OUT (age: ${age} days > ${AGE_THRESHOLDS.filterDays} days): ${item.result.title}`);
+      }
+
+      return !shouldFilter;
+    });
+
+    console.log(`[AGE FILTER] Results: ${filteredItems.length} passed, ${ageFilteredCount} filtered out`);
+  } else {
+    console.log(`[AGE FILTER] Age-based filtering disabled (no retention configured)`);
+  }
+
+  // Filter by quality
+  let qualityFilteredCount = 0;
 
   if (qualityFilter && qualityFilter !== 'All') {
     console.log(`[FILTER] Applying quality filter: ${qualityFilter}`);
 
-    filteredItems = parsedItems.filter(item => {
+    filteredItems = filteredItems.filter(item => {
       const quality = extractQuality(item.parsed);
       const matches = matchesQualityFilter(quality, qualityFilter);
 
       if (!matches) {
-        filteredCount++;
+        qualityFilteredCount++;
         console.log(`[FILTER] ❌ FILTERED OUT (quality: ${quality || 'unknown'}): ${item.result.title}`);
       }
 
       return matches;
     });
 
-    console.log(`[FILTER] Quality filter results: ${filteredItems.length} passed, ${filteredCount} filtered out`);
+    console.log(`[FILTER] Quality filter results: ${filteredItems.length} passed, ${qualityFilteredCount} filtered out`);
   } else {
     console.log(`[FILTER] No quality filter applied (showing all qualities)`);
   }
@@ -438,18 +569,19 @@ function filterAndSortStreams(results, sortMethod, preferredLanguage, qualityFil
  * Format title for Stremio display - 3-line format with emojis
  * Line 1: 🎬 {Resolution} • {Audio Codec} {Atmos} {Channels}
  * Line 2: {Emoji} {HDR/DV} • {Source} • {Release Group}
- * Line 3: 💾 {Size} • 📡 {Indexer}
+ * Line 3: 💾 {Size} • 📡 {Indexer} • {Age}
  * @param {object} parsed - Parsed release data
  * @param {number} size - File size in bytes
  * @param {string} indexer - Indexer name
+ * @param {number} age - Age in days
  * @returns {object} Object with line1, line2, line3
  */
-function formatStremioTitle(parsed, size = null, indexer = '') {
+function formatStremioTitle(parsed, size = null, indexer = '', age = null) {
   if (!parsed) {
     return {
       line1: '🎬 Unknown',
       line2: '',
-      line3: formatSizeAndIndexer(size, indexer)
+      line3: formatSizeAndIndexer(size, indexer, age)
     };
   }
 
@@ -537,8 +669,8 @@ function formatStremioTitle(parsed, size = null, indexer = '') {
 
   const line2 = line2Parts.length > 0 ? line2Parts.join(' • ') : '';
 
-  // LINE 3: Size and Indexer
-  const line3 = formatSizeAndIndexer(size, indexer);
+  // LINE 3: Size, Indexer, and Age
+  const line3 = formatSizeAndIndexer(size, indexer, age);
 
   return { line1, line2, line3 };
 }
@@ -566,12 +698,13 @@ function simplifyAudioCodec(audioCodec) {
 }
 
 /**
- * Format size and indexer for line 3
+ * Format size, indexer, and age for line 3
  * @param {number} size - File size in bytes
  * @param {string} indexer - Indexer name
+ * @param {number} age - Age in days
  * @returns {string} Formatted line 3
  */
-function formatSizeAndIndexer(size, indexer) {
+function formatSizeAndIndexer(size, indexer, age = null) {
   const parts = [];
 
   // Size
@@ -587,6 +720,12 @@ function formatSizeAndIndexer(size, indexer) {
     parts.push(`📡 ${indexer}`);
   }
 
+  // Age (if configured to show)
+  const ageDisplay = formatAgeDisplay(age);
+  if (ageDisplay) {
+    parts.push(ageDisplay);
+  }
+
   return parts.join(' • ');
 }
 
@@ -598,5 +737,8 @@ module.exports = {
   formatStremioTitle,
   getVideoQualityRank,
   getAudioQualityRank,
-  detectLanguageGroup
+  detectLanguageGroup,
+  getAgeHealthStatus,
+  formatAgeDisplay,
+  shouldFilterByAge
 };

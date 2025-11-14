@@ -108,6 +108,50 @@ const CINEMETA_URL = 'https://v3-cinemeta.strem.io/meta';
 // Asset Paths
 const FAILURE_VIDEO_FILENAME = 'failure_video.mp4';
 
+// Age-based Stream Filtering (Retention Management)
+const USENET_RETENTION_DAYS = toPositiveInt(process.env.USENET_RETENTION_DAYS, null);
+const FILTER_THRESHOLD_PERCENT = (() => {
+  const val = toFiniteNumber(process.env.FILTER_THRESHOLD_PERCENT);
+  return (Number.isFinite(val) && val >= 0 && val <= 100) ? val : 97;
+})();
+const WARNING_THRESHOLD_PERCENT = (() => {
+  const val = toFiniteNumber(process.env.WARNING_THRESHOLD_PERCENT);
+  return (Number.isFinite(val) && val >= 0 && val <= 100) ? val : 95;
+})();
+const AGING_THRESHOLD_PERCENT = (() => {
+  const val = toFiniteNumber(process.env.AGING_THRESHOLD_PERCENT);
+  return (Number.isFinite(val) && val >= 0 && val <= 100) ? val : 85;
+})();
+const SHOW_FILE_AGE = toBoolean(process.env.SHOW_FILE_AGE, true);
+
+// Calculate absolute day thresholds (only if retention is configured)
+const AGE_THRESHOLDS = (() => {
+  if (!USENET_RETENTION_DAYS || USENET_RETENTION_DAYS <= 0) {
+    console.log('[AGE FILTER] Age-based filtering is disabled (USENET_RETENTION_DAYS not configured)');
+    return null;
+  }
+
+  const thresholds = {
+    retentionDays: USENET_RETENTION_DAYS,
+    filterDays: Math.floor(USENET_RETENTION_DAYS * (FILTER_THRESHOLD_PERCENT / 100)),
+    warningDays: Math.floor(USENET_RETENTION_DAYS * (WARNING_THRESHOLD_PERCENT / 100)),
+    agingDays: Math.floor(USENET_RETENTION_DAYS * (AGING_THRESHOLD_PERCENT / 100)),
+    freshDays: 7 // Fresh content threshold (0-7 days)
+  };
+
+  console.log('[AGE FILTER] ===== Age-Based Filtering Configuration =====');
+  console.log(`[AGE FILTER] Retention period: ${thresholds.retentionDays} days`);
+  console.log(`[AGE FILTER] 📅 Fresh: 0-${thresholds.freshDays} days`);
+  console.log(`[AGE FILTER] 📄 Standard: ${thresholds.freshDays + 1}-${thresholds.agingDays - 1} days`);
+  console.log(`[AGE FILTER] ⏳ Aging: ${thresholds.agingDays}-${thresholds.warningDays - 1} days (${AGING_THRESHOLD_PERCENT}% retention)`);
+  console.log(`[AGE FILTER] ⚠️  Warning: ${thresholds.warningDays}-${thresholds.filterDays} days (${WARNING_THRESHOLD_PERCENT}% retention)`);
+  console.log(`[AGE FILTER] 🚫 Filtered: >${thresholds.filterDays} days (>${FILTER_THRESHOLD_PERCENT}% retention)`);
+  console.log(`[AGE FILTER] Show age in streams: ${SHOW_FILE_AGE ? 'enabled' : 'disabled'}`);
+  console.log('[AGE FILTER] ==============================================');
+
+  return thresholds;
+})();
+
 // Video Extensions
 const NZBDAV_VIDEO_EXTENSIONS = new Set([
   '.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm',
@@ -175,5 +219,13 @@ module.exports = {
   CINEMETA_URL,
 
   // Assets
-  FAILURE_VIDEO_FILENAME
+  FAILURE_VIDEO_FILENAME,
+
+  // Age-based filtering
+  USENET_RETENTION_DAYS,
+  FILTER_THRESHOLD_PERCENT,
+  WARNING_THRESHOLD_PERCENT,
+  AGING_THRESHOLD_PERCENT,
+  SHOW_FILE_AGE,
+  AGE_THRESHOLDS
 };
